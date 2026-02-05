@@ -12,19 +12,18 @@
 //!   cargo run --example 25-combined-human-queue
 //!
 //! Key additions from previous examples:
-//!   - All three human queue tools in one MCP server
-//!   - HumanQueue struct to collect all items
+//!   - All three human queue tools in one MCP server (via library)
 //!   - Organized output: Questions first, then Assumptions, then Proposed Tasks
 //!   - Clear indication of which items need review vs informational
 
 use anyhow::Result;
-use claude_agent_sdk_rs::types::mcp::ToolResultContent as McpToolResultContent;
 use claude_agent_sdk_rs::{
-    create_sdk_mcp_server, tool, ClaudeAgentOptions, ClaudeClient, McpServerConfig, McpServers,
-    Message, PermissionMode, SdkMcpTool, ToolResult,
+    create_sdk_mcp_server, ClaudeAgentOptions, ClaudeClient, McpServerConfig, McpServers, Message,
+    PermissionMode,
 };
 use colored::Colorize;
 use futures::StreamExt;
+use rstep::human_queue::{create_human_queue_tools, HumanQueue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -34,132 +33,8 @@ use tempfile::tempdir;
 use tracing::{debug, info};
 
 // ============================================================
-// TYPES
+// TYPES (for step result only - queue types come from lib)
 // ============================================================
-
-/// A question captured from Claude via the ask_question tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Question {
-    /// The question Claude wants to ask
-    question: String,
-    /// Optional context explaining why this question is needed
-    #[serde(default)]
-    context: Option<String>,
-    /// If true, work should stop until this is answered
-    blocking: bool,
-}
-
-/// An assumption captured from Claude via the log_assumption tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Assumption {
-    /// What Claude decided to do
-    decision: String,
-    /// Why Claude made this decision
-    reasoning: String,
-    /// Other options Claude considered
-    #[serde(default)]
-    alternatives: Vec<String>,
-    /// If true, human must review before merge
-    needs_review: bool,
-}
-
-/// A proposed task captured from Claude via the propose_task tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProposedTask {
-    /// Short task title
-    title: String,
-    /// What needs to be done and why
-    description: String,
-    /// Priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog
-    priority: u8,
-    /// Files related to this task
-    #[serde(default)]
-    related_files: Vec<String>,
-}
-
-impl ProposedTask {
-    fn priority_label(&self) -> &'static str {
-        match self.priority {
-            0 => "CRITICAL",
-            1 => "HIGH",
-            2 => "MEDIUM",
-            3 => "LOW",
-            4 => "BACKLOG",
-            _ => "UNKNOWN",
-        }
-    }
-}
-
-/// Collection of all human queue items
-#[derive(Debug, Clone, Default)]
-struct HumanQueue {
-    questions: Vec<Question>,
-    assumptions: Vec<Assumption>,
-    proposed_tasks: Vec<ProposedTask>,
-}
-
-impl HumanQueue {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn add_question(&mut self, q: Question) {
-        self.questions.push(q);
-    }
-
-    fn add_assumption(&mut self, a: Assumption) {
-        self.assumptions.push(a);
-    }
-
-    fn add_proposed_task(&mut self, t: ProposedTask) {
-        self.proposed_tasks.push(t);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.questions.is_empty() && self.assumptions.is_empty() && self.proposed_tasks.is_empty()
-    }
-
-    /// Returns true if there are any blocking items that need human action
-    fn has_blocking_items(&self) -> bool {
-        self.questions.iter().any(|q| q.blocking)
-            || self.assumptions.iter().any(|a| a.needs_review)
-    }
-
-    fn total_items(&self) -> usize {
-        self.questions.len() + self.assumptions.len() + self.proposed_tasks.len()
-    }
-}
-
-/// Arguments for the ask_question tool
-#[derive(Debug, Deserialize)]
-struct AskQuestionArgs {
-    question: String,
-    #[serde(default)]
-    context: Option<String>,
-    blocking: bool,
-}
-
-/// Arguments for the log_assumption tool
-#[derive(Debug, Deserialize)]
-struct LogAssumptionArgs {
-    decision: String,
-    reasoning: String,
-    #[serde(default)]
-    alternatives: Option<Vec<String>>,
-    #[serde(default)]
-    needs_review: Option<bool>,
-}
-
-/// Arguments for the propose_task tool
-#[derive(Debug, Deserialize)]
-struct ProposeTaskArgs {
-    title: String,
-    description: String,
-    #[serde(default)]
-    priority: Option<u8>,
-    #[serde(default)]
-    related_files: Option<Vec<String>>,
-}
 
 /// Blocker types that can prevent step completion
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,261 +49,6 @@ enum StepResult {
     Success { summary: String },
     Failed { reason: String },
     Blocked { blocker: Blocker },
-}
-
-// ============================================================
-// TOOL CREATION
-// ============================================================
-
-/// Create all three human queue tools with a shared queue
-fn create_human_queue_tools(queue: Arc<Mutex<HumanQueue>>) -> Vec<SdkMcpTool> {
-    let queue_for_question = queue.clone();
-    let queue_for_assumption = queue.clone();
-    let queue_for_task = queue.clone();
-
-    let ask_question_tool = tool!(
-        "ask_question",
-        "Ask the human a clarifying question. Use when requirements are unclear or you need guidance. \
-         If blocking=true, work should stop until the human answers. If blocking=false, you may continue \
-         with your best guess while the question is pending.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The question to ask the human"
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Why you need this answered - what are you trying to decide?"
-                },
-                "blocking": {
-                    "type": "boolean",
-                    "description": "If true, stop work until answered. If false, continue with best guess."
-                }
-            },
-            "required": ["question", "blocking"]
-        }),
-        move |args: serde_json::Value| {
-            let storage = queue_for_question.clone();
-            async move {
-                let parsed: AskQuestionArgs = serde_json::from_value(args)?;
-
-                let question = Question {
-                    question: parsed.question.clone(),
-                    context: parsed.context.clone(),
-                    blocking: parsed.blocking,
-                };
-
-                println!("\n{}", "=".repeat(60).magenta());
-                println!("{}", "  QUESTION FROM CLAUDE".magenta().bold());
-                println!("{}", "=".repeat(60).magenta());
-                println!("  {} {}", "Question:".yellow(), parsed.question);
-                if let Some(ref ctx) = parsed.context {
-                    println!("  {} {}", "Context:".dimmed(), ctx);
-                }
-                println!(
-                    "  {} {}",
-                    "Blocking:".dimmed(),
-                    if parsed.blocking {
-                        "YES (work will stop)".red().to_string()
-                    } else {
-                        "NO (will continue with best guess)".green().to_string()
-                    }
-                );
-                println!("{}", "=".repeat(60).magenta());
-
-                storage.lock().unwrap().add_question(question);
-
-                let response = if parsed.blocking {
-                    "Question recorded. Work is BLOCKED until human responds. Do not proceed with changes."
-                } else {
-                    "Question recorded. You may continue with your best judgment while awaiting response."
-                };
-
-                Ok(ToolResult {
-                    content: vec![McpToolResultContent::Text {
-                        text: response.to_string(),
-                    }],
-                    is_error: false,
-                })
-            }
-        }
-    );
-
-    let log_assumption_tool = tool!(
-        "log_assumption",
-        "Log an assumption you're making. Human will review later. Use when making judgment calls \
-         about implementation details, design decisions, or anything that could reasonably be done \
-         differently. Work continues after logging - this is non-blocking unless needs_review=true.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "decision": {
-                    "type": "string",
-                    "description": "What you decided to do"
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "Why you made this decision"
-                },
-                "alternatives": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Other options you considered"
-                },
-                "needs_review": {
-                    "type": "boolean",
-                    "description": "If true, human must review before merge. Use for significant decisions."
-                }
-            },
-            "required": ["decision", "reasoning"]
-        }),
-        move |args: serde_json::Value| {
-            let storage = queue_for_assumption.clone();
-            async move {
-                let parsed: LogAssumptionArgs = serde_json::from_value(args)?;
-
-                let needs_review = parsed.needs_review.unwrap_or(false);
-                let alternatives = parsed.alternatives.unwrap_or_default();
-
-                let assumption = Assumption {
-                    decision: parsed.decision.clone(),
-                    reasoning: parsed.reasoning.clone(),
-                    alternatives: alternatives.clone(),
-                    needs_review,
-                };
-
-                println!("\n{}", "=".repeat(60).blue());
-                println!("{}", "  ASSUMPTION LOGGED".blue().bold());
-                println!("{}", "=".repeat(60).blue());
-                println!("  {} {}", "Decision:".yellow(), parsed.decision);
-                println!("  {} {}", "Reasoning:".dimmed(), parsed.reasoning);
-                if !alternatives.is_empty() {
-                    println!("  {}", "Alternatives considered:".dimmed());
-                    for alt in &alternatives {
-                        println!("    {} {}", "-".dimmed(), alt);
-                    }
-                }
-                println!(
-                    "  {} {}",
-                    "Needs review:".dimmed(),
-                    if needs_review {
-                        "YES (must approve before merge)".yellow().to_string()
-                    } else {
-                        "No (informational)".green().to_string()
-                    }
-                );
-                println!("{}", "=".repeat(60).blue());
-
-                storage.lock().unwrap().add_assumption(assumption);
-
-                let response = if needs_review {
-                    "Assumption logged for required review. Continue with your implementation."
-                } else {
-                    "Assumption logged for informational review. Continue with your implementation."
-                };
-
-                Ok(ToolResult {
-                    content: vec![McpToolResultContent::Text {
-                        text: response.to_string(),
-                    }],
-                    is_error: false,
-                })
-            }
-        }
-    );
-
-    let propose_task_tool = tool!(
-        "propose_task",
-        "Propose a new task you discovered while working. Human will review and approve. \
-         Use when you notice: missing tests, documentation gaps, potential improvements, \
-         code smells, or related work that should be tracked. This is NON-BLOCKING - \
-         continue with your current task after proposing.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Short task title (imperative form, e.g., 'Add unit tests for add function')"
-                },
-                "description": {
-                    "type": "string",
-                    "description": "What needs to be done and why"
-                },
-                "priority": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 4,
-                    "description": "Suggested priority: 0=critical, 1=high, 2=medium, 3=low, 4=backlog"
-                },
-                "related_files": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Files related to this task"
-                }
-            },
-            "required": ["title", "description"]
-        }),
-        move |args: serde_json::Value| {
-            let storage = queue_for_task.clone();
-            async move {
-                let parsed: ProposeTaskArgs = serde_json::from_value(args)?;
-
-                let priority = parsed.priority.unwrap_or(2).min(4);
-                let related_files = parsed.related_files.unwrap_or_default();
-
-                let task = ProposedTask {
-                    title: parsed.title.clone(),
-                    description: parsed.description.clone(),
-                    priority,
-                    related_files: related_files.clone(),
-                };
-
-                let priority_label = task.priority_label();
-                let priority_color = match priority {
-                    0 => "CRITICAL".red().bold(),
-                    1 => "HIGH".yellow().bold(),
-                    2 => "MEDIUM".cyan(),
-                    3 => "LOW".green(),
-                    _ => "BACKLOG".dimmed(),
-                };
-
-                println!("\n{}", "=".repeat(60).green());
-                println!("{}", "  TASK PROPOSED".green().bold());
-                println!("{}", "=".repeat(60).green());
-                println!("  {} {}", "Title:".yellow(), parsed.title);
-                println!("  {} {}", "Description:".dimmed(), parsed.description);
-                println!(
-                    "  {} {} ({})",
-                    "Priority:".dimmed(),
-                    priority_color,
-                    priority_label
-                );
-                if !related_files.is_empty() {
-                    println!("  {}", "Related files:".dimmed());
-                    for file in &related_files {
-                        println!("    {} {}", "-".dimmed(), file);
-                    }
-                }
-                println!("{}", "=".repeat(60).green());
-
-                storage.lock().unwrap().add_proposed_task(task);
-
-                Ok(ToolResult {
-                    content: vec![McpToolResultContent::Text {
-                        text: format!(
-                            "Task proposed: '{}' (priority: {}). Queued for human review. Continue with your current work.",
-                            parsed.title, priority_label
-                        ),
-                    }],
-                    is_error: false,
-                })
-            }
-        }
-    );
-
-    vec![ask_question_tool, log_assumption_tool, propose_task_tool]
 }
 
 // ============================================================
@@ -483,8 +103,8 @@ fn display_human_queue(queue: &HumanQueue) {
         queue.proposed_tasks.len().to_string().green()
     );
 
-    let blocking_questions = queue.questions.iter().filter(|q| q.blocking).count();
-    let needs_review_assumptions = queue.assumptions.iter().filter(|a| a.needs_review).count();
+    let blocking_questions = queue.blocking_question_count();
+    let needs_review_assumptions = queue.needs_review_count();
 
     if queue.has_blocking_items() {
         println!(
@@ -678,7 +298,7 @@ async fn main() -> Result<()> {
     println!("{}", "-".repeat(60).dimmed());
 
     // ============================================================
-    // 3. CREATE CUSTOM MCP SERVER WITH ALL THREE TOOLS
+    // 3. CREATE CUSTOM MCP SERVER WITH ALL THREE TOOLS (from lib)
     // ============================================================
 
     println!("\n{}", "Creating custom MCP server...".cyan().bold());
@@ -686,7 +306,7 @@ async fn main() -> Result<()> {
     // Shared storage for all human queue items
     let human_queue: Arc<Mutex<HumanQueue>> = Arc::new(Mutex::new(HumanQueue::new()));
 
-    // Create all three tools with shared storage
+    // Create all three tools with shared storage (using library function)
     let tools = create_human_queue_tools(human_queue.clone());
 
     // Create the MCP server with all tools
