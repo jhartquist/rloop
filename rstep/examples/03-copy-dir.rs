@@ -9,7 +9,6 @@ use rstep::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    helpers::init_tracing();
     let temp_dir = helpers::copy_template(Template::BugAdder)?;
 
     let mut printer = EventPrinter::new(temp_dir.path());

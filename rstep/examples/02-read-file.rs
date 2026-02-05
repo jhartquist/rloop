@@ -10,7 +10,6 @@ use tempfile::tempdir;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    helpers::init_tracing();
     let temp_dir = tempdir()?;
 
     helpers::write_file(temp_dir.path(), "hello.txt", "Hello, Claude")?;

@@ -36,8 +36,13 @@ impl EventPrinter {
                     match block {
                         claude_agent_sdk_rs::ContentBlock::Text(t) => {
                             let label = "  ASST".cyan().bold();
-                            for line in t.text.lines() {
-                                println!("{label}  {line}");
+                            let pad = "      ";
+                            for (i, line) in t.text.lines().enumerate() {
+                                if i == 0 {
+                                    println!("{label}  {line}");
+                                } else {
+                                    println!("{pad}  {line}");
+                                }
                             }
                         }
                         claude_agent_sdk_rs::ContentBlock::ToolUse(tu) => {
