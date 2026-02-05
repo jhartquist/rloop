@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rstep::{model::Model, step::run_step, tool::BuiltinTool};
+use rstep::{model::Model, print::EventPrinter, step::run_step_with, tool::BuiltinTool};
 use tempfile::tempdir;
 
 #[tokio::main]
@@ -9,14 +9,16 @@ async fn main() -> Result<()> {
     let filename = temp_dir.path().join("hello.txt");
     std::fs::write(&filename, "Hello, Claude")?;
 
-    run_step(
+    let mut printer = EventPrinter::new(temp_dir.path());
+
+    run_step_with(
         "What does hello.txt say?",
         Model::Haiku,
         temp_dir.path(),
         &[BuiltinTool::Read],
+        |msg| printer.print(msg),
     )
-    .await?
-    .print_summary();
+    .await?;
 
     Ok(())
 }
