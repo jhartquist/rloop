@@ -26,8 +26,9 @@
 //! This example uses library modules:
 //!   - rstep::git for worktree operations
 //!   - rstep::human_queue for human-in-the-loop tools
+//!   - rstep::step for config, task, and result types
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use claude_agent_sdk_rs::{
     create_sdk_mcp_server, ClaudeAgentOptions, ClaudeClient, ContentBlock, McpServerConfig,
@@ -40,262 +41,31 @@ use rstep::git::{
     merge_to_main, unlock_worktree,
 };
 use rstep::human_queue::{create_human_queue_tools, HumanQueue};
-use serde::{Deserialize, Serialize};
+use rstep::step::{load_config, run_verification, Blocker, StepResult, Task};
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
-// tracing available if needed
 
 // ============================================================
-// CONFIG TYPES (from example 27)
+// MOCK TASK (for when br is not installed)
 // ============================================================
 
-/// Root configuration structure.
-#[derive(Debug, Deserialize, Clone)]
-pub struct Config {
-    #[serde(default)]
-    pub step: StepConfig,
-
-    #[serde(default)]
-    pub verification: VerificationConfig,
-
-    #[serde(default)]
-    pub worktree: WorktreeConfig,
-
-    #[serde(default)]
-    pub logging: LoggingConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            step: StepConfig::default(),
-            verification: VerificationConfig::default(),
-            worktree: WorktreeConfig::default(),
-            logging: LoggingConfig::default(),
-        }
+fn mock_task() -> Task {
+    Task {
+        id: "bd-mock123".to_string(),
+        title: "Fix the bug in add function".to_string(),
+        description: Some("The add function returns a-b instead of a+b".to_string()),
+        status: "open".to_string(),
+        priority: 2,
+        issue_type: "bug".to_string(),
+        acceptance_criteria: Some(
+            "- add(2, 3) should return 5\n- add(-1, 1) should return 0".to_string(),
+        ),
     }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct StepConfig {
-    #[serde(default = "default_model")]
-    pub model: String,
-
-    #[serde(default = "default_max_turns")]
-    pub max_turns: u32,
-
-    #[serde(default)]
-    pub tools: ToolsConfig,
-}
-
-impl Default for StepConfig {
-    fn default() -> Self {
-        Self {
-            model: default_model(),
-            max_turns: default_max_turns(),
-            tools: ToolsConfig::default(),
-        }
-    }
-}
-
-fn default_model() -> String {
-    "claude-haiku-4-5-20251001".to_string()
-}
-
-fn default_max_turns() -> u32 {
-    50
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ToolsConfig {
-    #[serde(default = "default_allowed_tools")]
-    pub allowed: Vec<String>,
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            allowed: default_allowed_tools(),
-        }
-    }
-}
-
-fn default_allowed_tools() -> Vec<String> {
-    vec![
-        "Read".to_string(),
-        "Write".to_string(),
-        "Edit".to_string(),
-        "Bash".to_string(),
-        "Glob".to_string(),
-        "Grep".to_string(),
-    ]
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct VerificationConfig {
-    #[serde(default = "default_verification_commands")]
-    pub commands: Vec<String>,
-
-    #[serde(default = "default_fail_fast")]
-    pub fail_fast: bool,
-}
-
-impl Default for VerificationConfig {
-    fn default() -> Self {
-        Self {
-            commands: default_verification_commands(),
-            fail_fast: default_fail_fast(),
-        }
-    }
-}
-
-fn default_verification_commands() -> Vec<String> {
-    vec!["cargo check".to_string(), "cargo test".to_string()]
-}
-
-fn default_fail_fast() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct WorktreeConfig {
-    #[serde(default = "default_worktree_root")]
-    pub root: String,
-
-    #[serde(default = "default_auto_merge")]
-    pub auto_merge: bool,
-}
-
-impl Default for WorktreeConfig {
-    fn default() -> Self {
-        Self {
-            root: default_worktree_root(),
-            auto_merge: default_auto_merge(),
-        }
-    }
-}
-
-fn default_worktree_root() -> String {
-    ".rloop/worktrees".to_string()
-}
-
-fn default_auto_merge() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct LoggingConfig {
-    #[serde(default = "default_session_dir")]
-    pub session_dir: String,
-
-    #[serde(default = "default_log_level")]
-    pub level: String,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            session_dir: default_session_dir(),
-            level: default_log_level(),
-        }
-    }
-}
-
-fn default_session_dir() -> String {
-    ".rloop/sessions".to_string()
-}
-
-fn default_log_level() -> String {
-    "debug".to_string()
-}
-
-// ============================================================
-// TASK TYPES (from example 26)
-// ============================================================
-
-/// A task from beads_rust (br).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub status: String,
-    pub priority: i32,
-    pub issue_type: String,
-    #[serde(default)]
-    pub acceptance_criteria: Option<String>,
-}
-
-impl Task {
-    /// Get the prompt to send to Claude for this task.
-    pub fn to_prompt(&self) -> String {
-        let mut prompt = format!("Task: {}\n", self.title);
-        if let Some(desc) = &self.description {
-            prompt.push_str(&format!("\nDescription:\n{}\n", desc));
-        }
-        if let Some(ac) = &self.acceptance_criteria {
-            prompt.push_str(&format!("\nAcceptance Criteria:\n{}\n", ac));
-        }
-        prompt
-    }
-
-    /// Create a mock task for demonstration when br is unavailable.
-    pub fn mock() -> Self {
-        Self {
-            id: "bd-mock123".to_string(),
-            title: "Fix the bug in add function".to_string(),
-            description: Some("The add function returns a-b instead of a+b".to_string()),
-            status: "open".to_string(),
-            priority: 2,
-            issue_type: "bug".to_string(),
-            acceptance_criteria: Some(
-                "- add(2, 3) should return 5\n- add(-1, 1) should return 0".to_string(),
-            ),
-        }
-    }
-}
-
-// ============================================================
-// STEP RESULT TYPES
-// ============================================================
-
-/// Blocker types that prevent step completion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Blocker {
-    Question {
-        id: String,
-        text: String,
-    },
-    Assumption {
-        id: String,
-        needs_review: bool,
-    },
-    Dependency {
-        task_id: String,
-    },
-}
-
-/// Result of a step execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StepResult {
-    Success {
-        summary: String,
-        tokens_used: u64,
-        duration_ms: u64,
-    },
-    Failed {
-        reason: String,
-        next_steps: Vec<String>,
-        tokens_used: u64,
-    },
-    Blocked {
-        blocker: Blocker,
-    },
 }
 
 // ============================================================
@@ -414,60 +184,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run verification commands in the given directory
-fn run_verification(path: &Path, commands: &[String], fail_fast: bool) -> Result<(bool, String)> {
-    let mut all_passed = true;
-    let mut output = String::new();
-
-    for cmd in commands {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            continue;
-        }
-
-        let result = Command::new(parts[0])
-            .args(&parts[1..])
-            .current_dir(path)
-            .output()
-            .with_context(|| format!("Failed to run: {}", cmd))?;
-
-        let cmd_output = format!(
-            "$ {}\n{}\n",
-            cmd,
-            String::from_utf8_lossy(&result.stdout)
-        );
-        output.push_str(&cmd_output);
-
-        if !result.status.success() {
-            all_passed = false;
-            output.push_str(&format!(
-                "FAILED: {}\n{}",
-                cmd,
-                String::from_utf8_lossy(&result.stderr)
-            ));
-            if fail_fast {
-                break;
-            }
-        }
-    }
-
-    Ok((all_passed, output))
-}
-
-/// Load config from .rloop/config.toml
-fn load_config(base_dir: &Path) -> Config {
-    let config_path = base_dir.join(".rloop/config.toml");
-
-    if !config_path.exists() {
-        return Config::default();
-    }
-
-    match fs::read_to_string(&config_path) {
-        Ok(contents) => toml::from_str::<Config>(&contents).unwrap_or_default(),
-        Err(_) => Config::default(),
-    }
-}
-
 /// Print a phase banner
 fn print_phase(phase: &str, description: &str) {
     println!();
@@ -583,7 +299,7 @@ async fn main() -> Result<()> {
 
     let task = if simulate_br {
         print_step("br not installed - using mock task");
-        Task::mock()
+        mock_task()
     } else {
         match get_ready_task() {
             Some(t) => {
@@ -592,7 +308,7 @@ async fn main() -> Result<()> {
             }
             None => {
                 print_step("No tasks in br ready queue - using mock task");
-                Task::mock()
+                mock_task()
             }
         }
     };
@@ -603,10 +319,7 @@ async fn main() -> Result<()> {
 
     // Mark task as in_progress
     br_update_status(&task.id, "in_progress", simulate_br)?;
-    print_step(&format!(
-        "Marked task {} as in_progress",
-        task.id.cyan()
-    ));
+    print_step(&format!("Marked task {} as in_progress", task.id.cyan()));
 
     // ============================================================
     // PHASE 3: BLOCKER CHECK
@@ -785,10 +498,7 @@ When done, summarize what you changed."#,
     let code = fs::read_to_string(&lib_path)?;
     let code_fixed = code.contains("a + b") && !code.contains("a - b");
 
-    print_kv(
-        "Code fixed",
-        if code_fixed { "YES" } else { "NO" },
-    );
+    print_kv("Code fixed", if code_fixed { "YES" } else { "NO" });
 
     // ============================================================
     // PHASE 7: COMMIT
@@ -862,7 +572,7 @@ When done, summarize what you changed."#,
         }
 
         StepResult::Success {
-            summary: format!("Fixed add function: changed a - b to a + b"),
+            summary: "Fixed add function: changed a - b to a + b".to_string(),
             tokens_used: total_tokens,
             duration_ms,
         }
@@ -906,14 +616,8 @@ When done, summarize what you changed."#,
     print_phase("CLEANUP", "Remove worktree and delete branch");
 
     let (wt_removed, br_deleted) = cleanup_worktree(&repo_path, &task.id)?;
-    print_kv(
-        "Worktree removed",
-        if wt_removed { "YES" } else { "NO" },
-    );
-    print_kv(
-        "Branch deleted",
-        if br_deleted { "YES" } else { "NO" },
-    );
+    print_kv("Worktree removed", if wt_removed { "YES" } else { "NO" });
+    print_kv("Branch deleted", if br_deleted { "YES" } else { "NO" });
 
     // ============================================================
     // PHASE 11: LOG
@@ -924,10 +628,7 @@ When done, summarize what you changed."#,
     print_kv("Task ID", &task.id);
     print_kv("Duration", &format!("{}ms", duration_ms));
     print_kv("Tokens", &total_tokens.to_string());
-    print_kv(
-        "Human queue items",
-        &queue.total_items().to_string(),
-    );
+    print_kv("Human queue items", &queue.total_items().to_string());
 
     // ============================================================
     // PHASE 12: RESULT
