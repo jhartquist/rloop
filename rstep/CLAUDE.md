@@ -8,11 +8,21 @@ Chronological examples in `examples/`. Each builds on the last.
 
 ### Commits
 
-One logical change per commit. Add dependencies just-in-time.
+One logical change per commit.
+
+**Dependencies come with the code that uses them.** Don't add deps before the code that needs them.
 
 ```
+ex-00: minimal query with verbose output
+  (adds tokio, anyhow, serde_json, futures, tempfile)
+
+ex-05: verification
+  (adds process handling deps when needed)
+```
+
+**Commit types:**
+```
 ex-XX: description (N lines)
-deps: add <crate>
 fix: what was fixed
 refactor: extract to lib
 test: what's tested
