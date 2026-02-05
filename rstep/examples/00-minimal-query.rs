@@ -33,9 +33,34 @@ async fn main() -> Result<()> {
     //    - Working directory set to our temp dir
     let options = ClaudeAgentOptions::builder()
         .model("claude-haiku-4-5-20251001")
-        .allowed_tools(Vec::<String>::new()) // No tools
         .permission_mode(PermissionMode::BypassPermissions)
         .cwd(temp.path())
+        .setting_sources(vec![])
+        .allowed_tools(Vec::<String>::new()) // No tools
+        .disallowed_tools(
+            [
+                "Task",
+                "TaskOutput",
+                "Bash",
+                "Glob",
+                "Grep",
+                "ExitPlanMode",
+                "Read",
+                "Edit",
+                "Write",
+                "NotebookEdit",
+                "WebFetch",
+                "TodoWrite",
+                "WebSearch",
+                "TaskStop",
+                "AskUserQuestion",
+                "Skill",
+                "EnterPlanMode",
+                "ToolSearch",
+            ]
+            .map(String::from)
+            .to_vec(),
+        )
         .build();
 
     // 3. Create client and connect
@@ -55,34 +80,51 @@ async fn main() -> Result<()> {
             match result {
                 Ok(message) => {
                     // Print the raw message as JSON for verbose output
-                    let json = serde_json::to_string_pretty(&message)?;
-                    println!("{}", json);
+                    // let json = serde_json::to_string_pretty(&message)?;
+                    // println!("{}", json);
+                    dbg!(&message);
 
                     // Track tokens based on message type
                     // Usage is serde_json::Value, so we access fields via .get()
-                    match &message {
-                        Message::Assistant(msg) => {
-                            if let Some(usage) = &msg.message.usage {
-                                if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                                    total_input_tokens += input;
-                                }
-                                if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                                    total_output_tokens += output;
-                                }
-                            }
-                        }
-                        Message::Result(result) => {
-                            if let Some(usage) = &result.usage {
-                                if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                                    total_input_tokens += input;
-                                }
-                                if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                                    total_output_tokens += output;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                    // match &message {
+                    //     Message::System(system_message) => {
+                    //         // dbg!(system_message);
+                    //     }
+                    //     Message::User(user_message) => todo!(),
+                    //     Message::Assistant(assistant_message) => todo!(),
+                    //     Message::Result(result_message) => todo!(),
+                    //     Message::StreamEvent(stream_event) => todo!(),
+                    //     Message::ControlCancelRequest(value) => todo!(),
+                    // }
+                    //
+                    // Message::Assistant(msg) => {
+                    //     if let Some(usage) = &msg.message.usage {
+                    //         if let Some(input) =
+                    //             usage.get("input_tokens").and_then(|v| v.as_u64())
+                    //         {
+                    //             total_input_tokens += input;
+                    //         }
+                    //         if let Some(output) =
+                    //             usage.get("output_tokens").and_then(|v| v.as_u64())
+                    //         {
+                    //             total_output_tokens += output;
+                    //         }
+                    //     }
+                    // }
+                    // Message::Result(result) => {
+                    //     if let Some(usage) = &result.usage {
+                    //         if let Some(input) =
+                    //             usage.get("input_tokens").and_then(|v| v.as_u64())
+                    //         {
+                    //             total_input_tokens += input;
+                    //         }
+                    //         if let Some(output) =
+                    //             usage.get("output_tokens").and_then(|v| v.as_u64())
+                    //         {
+                    //             total_output_tokens += output;
+                    //         }
+                    //     }
+                    // } // _ => {}
                 }
                 Err(e) => {
                     eprintln!("Error receiving message: {}", e);
@@ -99,7 +141,10 @@ async fn main() -> Result<()> {
     eprintln!("Token Summary:");
     eprintln!("  Input tokens:  {}", total_input_tokens);
     eprintln!("  Output tokens: {}", total_output_tokens);
-    eprintln!("  Total tokens:  {}", total_input_tokens + total_output_tokens);
+    eprintln!(
+        "  Total tokens:  {}",
+        total_input_tokens + total_output_tokens
+    );
 
     // temp dir is automatically cleaned up when `temp` goes out of scope
 
