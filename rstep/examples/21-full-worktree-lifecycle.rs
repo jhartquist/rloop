@@ -16,55 +16,26 @@
 //! Run with:
 //!   cargo run --example 21-full-worktree-lifecycle
 //!
-//! Key additions from previous examples:
-//!   - All operations combined into one coherent flow
-//!   - Clear phase labels (CREATE, LOCK, WORK, VERIFY, MERGE, CLEANUP)
-//!   - Foundation for extracting reusable git module
+//! This example uses the rstep::git module for all git operations.
 
 use anyhow::{Context, Result};
 use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, ContentBlock, Message, PermissionMode};
 use colored::Colorize;
 use futures::StreamExt;
+use rstep::git::{
+    branch_name, cleanup_worktree, commit_changes, create_worktree, current_branch, get_diff,
+    get_log, init_repo, list_branches, list_worktrees, lock_worktree, merge_to_main,
+    unlock_worktree, last_commit,
+};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
 use tracing::{debug, info};
 
 // ============================================================
-// GIT HELPERS
+// HELPERS
 // ============================================================
-
-/// Run a git command in the given directory, returning stdout
-fn git(repo_path: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| format!("Failed to run git {:?}", args))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git {:?} failed: {}", args, stderr);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Run a git command, ignoring errors (for cleanup operations)
-fn git_ignore_errors(repo_path: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
-}
 
 /// Recursively copy a directory and all its contents
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
@@ -84,127 +55,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Initialize a git repo with initial commit
-fn init_repo(repo_path: &Path) -> Result<()> {
-    git(repo_path, &["init"])?;
-    git(repo_path, &["config", "user.email", "test@example.com"])?;
-    git(repo_path, &["config", "user.name", "Test User"])?;
-    git(repo_path, &["add", "-A"])?;
-    git(repo_path, &["commit", "-m", "Initial commit"])?;
-    Ok(())
-}
-
-// ============================================================
-// WORKTREE LIFECYCLE FUNCTIONS
-// ============================================================
-
-/// Phase 1: CREATE - Create a worktree for the given task ID
-/// Creates: .rloop/worktrees/{task-id} on branch rloop/{task-id}
-fn create_worktree(repo_path: &Path, task_id: &str) -> Result<PathBuf> {
-    let worktree_dir = repo_path.join(".rloop/worktrees");
-    fs::create_dir_all(&worktree_dir)?;
-
-    let worktree_path = worktree_dir.join(task_id);
-    let branch_name = format!("rloop/{}", task_id);
-
-    git(
-        repo_path,
-        &[
-            "worktree",
-            "add",
-            &worktree_path.to_string_lossy(),
-            "-b",
-            &branch_name,
-        ],
-    )?;
-
-    Ok(worktree_path)
-}
-
-/// Phase 2: LOCK - Lock a worktree with a reason
-/// Prevents accidental deletion during work
-fn lock_worktree(worktree_path: &Path, reason: &str) -> Result<()> {
-    // Lock command is run from the worktree itself
-    git(
-        worktree_path,
-        &["worktree", "lock", ".", "--reason", reason],
-    )?;
-    Ok(())
-}
-
-/// Phase 2b: UNLOCK - Unlock a worktree (before merge/cleanup)
-fn unlock_worktree(worktree_path: &Path) -> Result<()> {
-    git(worktree_path, &["worktree", "unlock", "."])?;
-    Ok(())
-}
-
-/// Phase 4: Commit changes in the worktree
-/// Returns the commit hash
-fn commit_changes(worktree_path: &Path, message: &str) -> Result<String> {
-    // Stage all changes
-    git(worktree_path, &["add", "-A"])?;
-
-    // Check if there are changes to commit
-    let status = git(worktree_path, &["status", "--porcelain"])?;
-    if status.is_empty() {
-        anyhow::bail!("No changes to commit");
-    }
-
-    // Commit
-    git(worktree_path, &["commit", "-m", message])?;
-
-    // Get commit hash
-    let commit_hash = git(worktree_path, &["rev-parse", "HEAD"])?;
-
-    Ok(commit_hash)
-}
-
-/// Phase 5: MERGE - Squash merge a task branch to main
-fn merge_to_main(repo_path: &Path, task_id: &str, summary: &str) -> Result<()> {
-    let branch_name = format!("rloop/{}", task_id);
-
-    // Checkout main
-    git(repo_path, &["checkout", "main"])?;
-
-    // Squash merge
-    git(repo_path, &["merge", "--squash", &branch_name])?;
-
-    // Commit with task summary
-    let message = format!("task: {}", summary);
-    git(repo_path, &["commit", "-m", &message])?;
-
-    Ok(())
-}
-
-/// Phase 6: CLEANUP - Remove worktree and delete branch
-/// Returns (worktree_removed, branch_deleted)
-fn cleanup_worktree(repo_path: &Path, task_id: &str) -> Result<(bool, bool)> {
-    let worktree_path = repo_path.join(".rloop/worktrees").join(task_id);
-    let branch_name = format!("rloop/{}", task_id);
-
-    // 1. Unlock worktree (ignore errors if not locked)
-    let _ = git_ignore_errors(
-        repo_path,
-        &["worktree", "unlock", &worktree_path.to_string_lossy()],
-    );
-
-    // 2. Remove worktree
-    let worktree_removed = git(
-        repo_path,
-        &["worktree", "remove", &worktree_path.to_string_lossy()],
-    )
-    .is_ok();
-
-    // 3. Delete branch with -D (force delete after squash merge)
-    let branch_deleted = git(repo_path, &["branch", "-D", &branch_name]).is_ok();
-
-    Ok((worktree_removed, branch_deleted))
-}
-
-// ============================================================
-// VERIFICATION
-// ============================================================
-
 /// Run verification (cargo test) in the given directory
 fn run_verification(path: &Path) -> Result<bool> {
     let output = Command::new("cargo")
@@ -216,44 +66,7 @@ fn run_verification(path: &Path) -> Result<bool> {
     Ok(output.status.success())
 }
 
-// ============================================================
-// QUERY HELPERS
-// ============================================================
-
-/// Get the current branch name
-fn current_branch(repo_path: &Path) -> Result<String> {
-    git(repo_path, &["branch", "--show-current"])
-}
-
-/// Get the last commit hash (short)
-fn last_commit(repo_path: &Path) -> Result<String> {
-    git(repo_path, &["rev-parse", "--short", "HEAD"])
-}
-
-/// Get git log (oneline, limited)
-fn get_log(repo_path: &Path, limit: usize) -> Result<String> {
-    git(repo_path, &["log", "--oneline", &format!("-{}", limit)])
-}
-
-/// List all worktrees
-fn list_worktrees(repo_path: &Path) -> Result<String> {
-    git(repo_path, &["worktree", "list"])
-}
-
-/// List all branches
-fn list_branches(repo_path: &Path) -> Result<String> {
-    git(repo_path, &["branch", "-a"])
-}
-
-/// Get the diff between two commits
-fn get_diff(repo_path: &Path, from: &str, to: &str) -> Result<String> {
-    git(repo_path, &["diff", from, to])
-}
-
-// ============================================================
-// PHASE BANNER
-// ============================================================
-
+/// Print a phase banner
 fn print_phase(phase: &str, description: &str) {
     println!();
     println!("{}", "=".repeat(60).cyan());
@@ -335,7 +148,7 @@ async fn main() -> Result<()> {
         "bug-adder".white().bold()
     );
 
-    // Initialize git repo
+    // Initialize git repo (using library function)
     println!("\n{}", "Initializing git repository...".yellow().bold());
     init_repo(repo_path)?;
 
@@ -353,7 +166,7 @@ async fn main() -> Result<()> {
     );
 
     let task_id = "bd-fix-add";
-    let branch_name = format!("rloop/{}", task_id);
+    let task_branch = branch_name(task_id);
 
     // ============================================================
     // PHASE 1: CREATE
@@ -376,7 +189,7 @@ async fn main() -> Result<()> {
     println!(
         "  {} {}",
         "Branch name:".dimmed(),
-        branch_name.cyan()
+        task_branch.cyan()
     );
 
     // Show worktree list
@@ -557,7 +370,7 @@ async fn main() -> Result<()> {
         "YES - worktree has correct code".green().bold()
     );
 
-    // Commit changes in worktree
+    // Commit changes in worktree (using library function)
     println!("\n{}", "Committing changes in worktree...".yellow().bold());
     let commit_message = "fix: correct add function to use + instead of -";
     let commit_hash = commit_changes(&worktree_path, commit_message)?;
@@ -626,7 +439,7 @@ async fn main() -> Result<()> {
         format!("task: {}", task_summary).cyan()
     );
 
-    // Show git log on main
+    // Show git log on main (using library function)
     println!("\n{}", "Git log (main branch):".green().bold());
     let log = get_log(repo_path, 3)?;
     for line in log.lines() {
@@ -639,7 +452,7 @@ async fn main() -> Result<()> {
 
     print_phase("CLEANUP", "unlock, remove worktree, delete branch");
 
-    // Show state before cleanup
+    // Show state before cleanup (using library functions)
     println!("\n{}", "Before cleanup:".yellow().bold());
     let worktrees_before = list_worktrees(repo_path)?;
     println!("{}", "  Worktrees:");
@@ -652,7 +465,7 @@ async fn main() -> Result<()> {
         println!("    {}", line.trim());
     }
 
-    // Perform cleanup
+    // Perform cleanup (using library function)
     let (worktree_removed, branch_deleted) = cleanup_worktree(repo_path, task_id)?;
 
     println!("\n{}", "Cleanup operations:".yellow().bold());
@@ -735,7 +548,7 @@ async fn main() -> Result<()> {
         }
     );
 
-    // Show diff
+    // Show diff (using library function)
     println!("\n{}", "Changes merged to main:".yellow().bold());
     println!("{}", "-".repeat(60).dimmed());
     let diff = get_diff(repo_path, &initial_commit, "HEAD")?;
