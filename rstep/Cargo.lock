@@ -439,6 +439,7 @@ dependencies = [
  "anyhow",
  "claude-agent-sdk-rs",
  "futures",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
