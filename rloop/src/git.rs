@@ -1,4 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{bail, Context};
 
 use crate::task::TaskId;
 
@@ -9,35 +12,122 @@ pub struct Worktree {
     pub task_id: TaskId,
 }
 
+/// Run a git command in the given directory, returning stdout on success.
+fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git {} failed: {stderr}", args.join(" "));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Create a new worktree for a task, branched off `base_branch`.
+///
+/// The worktree lives at `{repo}/.rloop/worktrees/{task_id:02}/` on a new
+/// branch named `rloop/{task_id:02}`.
 pub fn create_worktree(
-    _repo: &Path,
-    _task_id: TaskId,
-    _base_branch: &str,
+    repo: &Path,
+    task_id: TaskId,
+    base_branch: &str,
 ) -> anyhow::Result<Worktree> {
-    todo!()
+    let label = format!("{task_id:02}");
+    let worktree_dir = repo.join(".rloop").join("worktrees");
+    std::fs::create_dir_all(&worktree_dir)
+        .with_context(|| format!("failed to create {}", worktree_dir.display()))?;
+
+    let wt_path = worktree_dir.join(&label);
+    let branch = format!("rloop/{label}");
+
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().context("non-UTF-8 worktree path")?,
+            "-b",
+            &branch,
+            base_branch,
+        ],
+    )
+    .with_context(|| format!("failed to create worktree for task {task_id}"))?;
+
+    Ok(Worktree {
+        path: wt_path,
+        branch,
+        task_id,
+    })
 }
 
 /// Lock a worktree to prevent accidental removal.
-pub fn lock_worktree(_worktree: &Worktree) -> anyhow::Result<()> {
-    todo!()
+pub fn lock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
+    git(
+        &worktree.path,
+        &[
+            "worktree",
+            "lock",
+            worktree.path.to_str().context("non-UTF-8 worktree path")?,
+        ],
+    )
+    .with_context(|| format!("failed to lock worktree for task {}", worktree.task_id))?;
+    Ok(())
 }
 
 /// Unlock a previously locked worktree.
-pub fn unlock_worktree(_worktree: &Worktree) -> anyhow::Result<()> {
-    todo!()
+pub fn unlock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
+    git(
+        &worktree.path,
+        &[
+            "worktree",
+            "unlock",
+            worktree.path.to_str().context("non-UTF-8 worktree path")?,
+        ],
+    )
+    .with_context(|| format!("failed to unlock worktree for task {}", worktree.task_id))?;
+    Ok(())
 }
 
 /// Merge a worktree's branch into the target branch.
+///
+/// Checks out `into_branch` in the main repo and merges the worktree branch.
 pub fn merge_worktree(
-    _repo: &Path,
-    _worktree: &Worktree,
-    _into_branch: &str,
+    repo: &Path,
+    worktree: &Worktree,
+    into_branch: &str,
 ) -> anyhow::Result<()> {
-    todo!()
+    git(repo, &["checkout", into_branch])
+        .with_context(|| format!("failed to checkout {into_branch}"))?;
+
+    git(repo, &["merge", &worktree.branch])
+        .with_context(|| {
+            format!(
+                "failed to merge {} into {into_branch}",
+                worktree.branch
+            )
+        })?;
+
+    Ok(())
 }
 
-/// Clean up a worktree: unlock, remove, delete branch.
-pub fn cleanup_worktree(_repo: &Path, _worktree: &Worktree) -> anyhow::Result<()> {
-    todo!()
+/// Clean up a worktree: unlock (if locked), remove, and delete the branch.
+pub fn cleanup_worktree(repo: &Path, worktree: &Worktree) -> anyhow::Result<()> {
+    // Try unlocking — ignore errors since it may not be locked
+    let wt_path_str = worktree
+        .path
+        .to_str()
+        .context("non-UTF-8 worktree path")?;
+
+    let _ = git(repo, &["worktree", "unlock", wt_path_str]);
+
+    git(repo, &["worktree", "remove", wt_path_str, "--force"])
+        .with_context(|| format!("failed to remove worktree for task {}", worktree.task_id))?;
+
+    git(repo, &["branch", "-D", &worktree.branch])
+        .with_context(|| format!("failed to delete branch {}", worktree.branch))?;
+
+    Ok(())
 }
