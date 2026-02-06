@@ -38,12 +38,15 @@ struct StepSection {
 
 const DEFAULT_CONFIG_TOML: &str = "\
 [step]
-model = \"Sonnet\"
+model = \"Opus\"
 max_turns = 50
 max_retries = 10
 ";
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
+///
+/// # Errors
+/// Returns an error if the config file exists but contains invalid TOML or unrecognized values.
 pub fn load_config(rloop_dir: &Path) -> anyhow::Result<Config> {
     let config_path = rloop_dir.join("config.toml");
 
@@ -68,6 +71,9 @@ pub fn load_config(rloop_dir: &Path) -> anyhow::Result<Config> {
 
 /// Initialize `.rloop/` directory structure in a repo.
 /// Creates directories, default config, adds gitignore entries.
+///
+/// # Errors
+/// Returns an error if directory creation or file writing fails due to permissions or I/O issues.
 pub fn init_rloop_dir(repo: &Path) -> anyhow::Result<PathBuf> {
     let rloop_dir = repo.join(".rloop");
 
@@ -100,11 +106,7 @@ mod tests {
     #[test]
     fn load_partial_config() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "[step]\nmodel = \"Opus\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[step]\nmodel = \"Opus\"\n").unwrap();
         let config = load_config(dir.path()).unwrap();
         assert!(matches!(config.model, Model::Opus));
         assert_eq!(config.max_turns, 50); // default
@@ -134,11 +136,7 @@ mod tests {
     #[test]
     fn load_invalid_model() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "[step]\nmodel = \"gpt4\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[step]\nmodel = \"gpt4\"\n").unwrap();
         assert!(load_config(dir.path()).is_err());
     }
 

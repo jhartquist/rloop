@@ -81,6 +81,9 @@ impl SessionLogger {
     /// Create a new logger for a session.
     ///
     /// Opens (or creates) `{session_dir}/{session_id}.jsonl` for appending.
+    ///
+    /// # Errors
+    /// Returns an error if directory creation or file opening fails.
     pub fn new(session_dir: &Path, session_id: SessionId) -> anyhow::Result<Self> {
         std::fs::create_dir_all(session_dir)?;
         let path = session_dir.join(format!("{session_id}.jsonl"));
@@ -95,6 +98,9 @@ impl SessionLogger {
     }
 
     /// Write an event to the JSONL log file.
+    ///
+    /// # Errors
+    /// Returns an error if JSON serialization or file writing fails.
     pub fn log(&mut self, event: &Event) -> anyhow::Result<()> {
         let line = serde_json::to_string(event)?;
         writeln!(self.writer, "{line}")?;

@@ -1,5 +1,4 @@
 #![warn(clippy::pedantic)]
-#![allow(clippy::missing_errors_doc)] // Phase 1 skeleton — will add error docs during implementation
 
 pub mod config;
 pub mod git;
