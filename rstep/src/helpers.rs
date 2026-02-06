@@ -6,12 +6,14 @@ use tracing_subscriber::EnvFilter;
 
 pub enum Template {
     BugAdder,
+    TwoBugs,
 }
 
 impl Template {
     fn dir_name(&self) -> &str {
         match self {
             Template::BugAdder => "bug-adder",
+            Template::TwoBugs => "two-bugs",
         }
     }
 }
