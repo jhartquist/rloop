@@ -118,16 +118,18 @@ async fn main() -> Result<()> {
 
     let mut printer = EventPrinter::new(temp_dir.path());
     let mut messages: Vec<Message> = Vec::new();
+    let mut interrupted = false;
     {
         let mut stream = client.receive_response();
         while let Some(result) = stream.next().await {
             let msg = result?;
             printer.print(&msg);
             messages.push(msg);
-            if stop.load(Ordering::SeqCst) {
-                drop(stream);
+            if !interrupted && stop.load(Ordering::SeqCst) {
+                // Don't drop the stream — interrupt and keep reading
+                // so we still receive the Result message with cost/duration.
                 client.interrupt().await.ok();
-                break;
+                interrupted = true;
             }
         }
     }
