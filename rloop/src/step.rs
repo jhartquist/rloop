@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -34,6 +35,32 @@ pub struct StepResult {
     pub duration: Duration,
     /// Claude Code session ID — for tracing back to CC logs or future session resume.
     pub cc_session_id: Option<String>,
+}
+
+/// Abstraction over step execution — enables mock executors in tests.
+pub trait StepExecutor: Send + Sync {
+    fn execute(
+        &self,
+        task: &Task,
+        worktree_path: &Path,
+        config: &Config,
+        prior_learnings: &[String],
+    ) -> impl Future<Output = anyhow::Result<StepResult>> + Send;
+}
+
+/// Production executor that calls the real Claude agent SDK.
+pub struct RealStepExecutor;
+
+impl StepExecutor for RealStepExecutor {
+    async fn execute(
+        &self,
+        task: &Task,
+        worktree_path: &Path,
+        config: &Config,
+        prior_learnings: &[String],
+    ) -> anyhow::Result<StepResult> {
+        execute_step(task, worktree_path, config, prior_learnings).await
+    }
 }
 
 /// Build the user prompt from the task description and any prior failure learnings.
@@ -159,6 +186,9 @@ fn determine_outcome(
 /// Execute a task in a worktree: run the agent, verify, return the outcome.
 ///
 /// This is a single attempt. Retry logic lives at the session/orchestration level.
+///
+/// # Errors
+/// Returns an error if Claude client connection, query, or stream processing fails.
 pub async fn execute_step(
     task: &Task,
     worktree_path: &Path,

@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use rloop::model::Model;
-use rloop::task::{Task, TaskId, VerificationCommands};
-
 /// Write a task markdown file and return the path.
 pub fn create_task_file(dir: &Path, id: u32, content: &str) -> PathBuf {
     let filename = format!("{id:02}.md");
@@ -44,19 +41,6 @@ pub fn full_task(
     format!(
         "---\nid: {id}\nmodel: {model}\ndepends_on: [{deps_str}]\n{ver_str}completed: {completed}\n---\n{description}\n"
     )
-}
-
-/// Construct a Task struct directly (for tests that don't need file I/O).
-pub fn make_task(id: u32, deps: &[u32]) -> Task {
-    Task {
-        id: TaskId(id),
-        model: Model::Sonnet,
-        depends_on: deps.iter().map(|&d| TaskId(d)).collect(),
-        verification: None,
-        completed: false,
-        description: String::new(),
-        source_path: PathBuf::from(format!("{id:02}.md")),
-    }
 }
 
 /// Initialize a real git repo in the given directory with an initial commit.
