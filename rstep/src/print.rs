@@ -65,26 +65,18 @@ impl EventPrinter {
 
                 let tool_info = tool_use_id.and_then(|id| self.pending_tools.remove(id));
 
-                if let Some(tur) = user.extra.get("tool_use_result") {
-                    self.print_tool_result(tool_info.as_ref(), tur);
-                    return;
-                }
-
-                // Fallback: raw content string (some tools put results here)
-                if let Some(text) = user
+                let tur = user.extra.get("tool_use_result");
+                let content_text = user
                     .extra
                     .pointer("/message/content/0/content")
-                    .and_then(|v| v.as_str())
-                {
-                    let label = "   RES".yellow().bold();
-                    let name = tool_info
-                        .as_ref()
-                        .map(|(n, _)| n.as_str())
-                        .unwrap_or("?");
-                    println!("{label}  {}", name.dimmed());
-                    for line in text.lines() {
-                        println!("        {}", line.dimmed());
-                    }
+                    .and_then(|v| v.as_str());
+
+                if tur.is_some() || content_text.is_some() {
+                    self.print_tool_result(
+                        tool_info.as_ref(),
+                        tur,
+                        content_text,
+                    );
                     return;
                 }
 
@@ -156,7 +148,11 @@ impl EventPrinter {
                     .get("command")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                println!("{label}  {} {}", "Bash".dimmed(), cmd.dimmed());
+                println!(
+                    "{label}  {} {}",
+                    "Bash".dimmed(),
+                    self.shorten(cmd).dimmed()
+                );
             }
             other => {
                 let param = self.extract_key_param(input);
@@ -172,13 +168,14 @@ impl EventPrinter {
     fn print_tool_result(
         &self,
         tool_info: Option<&(String, serde_json::Value)>,
-        tur: &serde_json::Value,
+        tur: Option<&serde_json::Value>,
+        content_text: Option<&str>,
     ) {
         let label = "   RES".yellow().bold();
         let name = tool_info.map(|(n, _)| n.as_str()).unwrap_or("?");
 
-        // Read result: { "type": "text", "file": { "filePath": "...", "content": "...", "numLines": N } }
-        if let Some(file) = tur.get("file") {
+        // Read result: { "file": { "filePath": "...", "content": "...", "numLines": N } }
+        if let Some(file) = tur.and_then(|t| t.get("file")) {
             let path = file.get("filePath").and_then(|v| v.as_str()).unwrap_or("?");
             let num_lines = file.get("numLines").and_then(|v| v.as_u64()).unwrap_or(0);
             let content = file.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -193,15 +190,26 @@ impl EventPrinter {
             return;
         }
 
-        // Text result (Bash output, Edit/Write confirmations)
+        // Write/Edit: details already shown in CALL, just confirm
+        if matches!(name, "Write" | "Edit") {
+            println!("{label}  {}", format!("{name} ok").dimmed());
+            return;
+        }
+
+        // Try to extract text from tool_use_result (various possible shapes)
         if let Some(text) = tur
-            .as_str()
-            .or_else(|| tur.get("text").and_then(|v| v.as_str()))
-            .or_else(|| tur.get("content").and_then(|v| v.as_str()))
+            .and_then(|t| {
+                t.as_str()
+                    .or_else(|| t.get("text").and_then(|v| v.as_str()))
+                    .or_else(|| t.get("content").and_then(|v| v.as_str()))
+                    .or_else(|| t.get("stdout").and_then(|v| v.as_str()))
+                    .or_else(|| t.get("output").and_then(|v| v.as_str()))
+            })
+            .or(content_text)
         {
             println!("{label}  {}", name.dimmed());
             for line in text.lines() {
-                println!("        {}", line.dimmed());
+                println!("        {}", self.shorten(line).dimmed());
             }
             return;
         }
@@ -210,19 +218,28 @@ impl EventPrinter {
 
         // Debug: dump unknown result structures
         if std::env::var("RSTEP_DEBUG").is_ok() {
-            eprintln!(
-                "DEBUG tool_use_result: {}",
-                serde_json::to_string_pretty(tur).unwrap_or_default()
-            );
+            if let Some(t) = tur {
+                eprintln!(
+                    "DEBUG tool_use_result: {}",
+                    serde_json::to_string_pretty(t).unwrap_or_default()
+                );
+            }
         }
     }
 
+    /// Strip project_dir prefix from a path string.
     fn rel(&self, path: &str) -> String {
         let prefix = self.project_dir.to_string_lossy();
         path.strip_prefix(prefix.as_ref())
             .map(|p| p.strip_prefix('/').unwrap_or(p))
             .unwrap_or(path)
             .to_string()
+    }
+
+    /// Replace project_dir prefix anywhere in a string (for commands, output).
+    fn shorten(&self, text: &str) -> String {
+        let prefix = format!("{}/", self.project_dir.to_string_lossy());
+        text.replace(&prefix, "")
     }
 
     fn extract_key_param(&self, input: &serde_json::Value) -> String {
