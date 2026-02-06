@@ -1,7 +1,5 @@
 //! Run a single step with a real Claude agent against the bug-adder template.
 //!
-//! Requires ANTHROPIC_API_KEY environment variable.
-//!
 //! Usage: cargo run --example 03-single-step
 
 use std::fs;
@@ -15,11 +13,6 @@ use rloop::template::{Template, copy_template};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if std::env::var("ANTHROPIC_API_KEY").is_err() {
-        eprintln!("Set ANTHROPIC_API_KEY to run this example.");
-        std::process::exit(1);
-    }
-
     let dir = copy_template(&Template::BugAdder)?;
     let repo = dir.path().to_path_buf();
 

@@ -1,7 +1,5 @@
 //! Run a full session with DAG resolution against the two-bugs template.
 //!
-//! Requires ANTHROPIC_API_KEY environment variable.
-//!
 //! Usage: cargo run --example 04-session
 
 use std::fs;
@@ -14,11 +12,6 @@ use rloop::template::{Template, copy_template};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if std::env::var("ANTHROPIC_API_KEY").is_err() {
-        eprintln!("Set ANTHROPIC_API_KEY to run this example.");
-        std::process::exit(1);
-    }
-
     let dir = copy_template(&Template::TwoBugs)?;
     let repo = dir.path().to_path_buf();
 
