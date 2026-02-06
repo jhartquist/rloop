@@ -103,6 +103,9 @@ fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
 }
 
 /// Load a single task from a markdown file.
+///
+/// # Errors
+/// Returns an error if the file cannot be read, has invalid frontmatter, or contains invalid YAML.
 pub fn load_task(path: &Path) -> anyhow::Result<Task> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read task file: {}", path.display()))?;
@@ -143,6 +146,9 @@ fn is_task_filename(path: &Path) -> bool {
 }
 
 /// Load all tasks from a directory of markdown files.
+///
+/// # Errors
+/// Returns an error if the directory cannot be read or any task file fails to parse.
 pub fn load_all_tasks(dir: &Path) -> anyhow::Result<Vec<Task>> {
     let mut tasks: Vec<Task> = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read task directory: {}", dir.display()))?
@@ -168,6 +174,9 @@ enum Color {
 }
 
 /// Resolve the dependency DAG for a target task, returning execution order.
+///
+/// # Errors
+/// Returns an error if the target task is not found, a dependency is missing, or a cycle is detected.
 pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPlan> {
     let task_map: HashMap<TaskId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
 
@@ -183,6 +192,37 @@ pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPl
     Ok(ExecutionPlan {
         target,
         steps: order,
+    })
+}
+
+/// Resolve ALL incomplete tasks into a topological execution order.
+///
+/// This is the `--all` variant: instead of targeting a single task, it finds
+/// all incomplete tasks and returns them in dependency order.
+///
+/// # Errors
+/// Returns an error if a dependency is missing or a cycle is detected.
+pub fn resolve_all_dag(tasks: &[Task]) -> anyhow::Result<ExecutionPlan> {
+    let task_map: HashMap<TaskId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
+    let mut colors: HashMap<TaskId, Color> = task_map.keys().map(|&id| (id, Color::White)).collect();
+    let mut order: Vec<TaskId> = Vec::new();
+
+    // Visit every incomplete task to get a full topological ordering
+    for task in tasks {
+        if !task.completed {
+            dfs(task.id, &task_map, &mut colors, &mut order)?;
+        }
+    }
+
+    // Filter out already-completed tasks from the execution plan
+    let steps: Vec<TaskId> = order
+        .into_iter()
+        .filter(|id| !task_map[id].completed)
+        .collect();
+
+    Ok(ExecutionPlan {
+        target: TaskId(u32::MAX), // sentinel for "all tasks"
+        steps,
     })
 }
 
@@ -483,5 +523,37 @@ Do the thing.
         ];
         let plan = resolve_dag(&tasks, TaskId(1)).unwrap();
         assert_eq!(plan.steps, vec![TaskId(0), TaskId(1)]);
+    }
+
+    #[test]
+    fn dag_all_simple() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let plan = resolve_all_dag(&tasks).unwrap();
+        assert_eq!(plan.steps, vec![TaskId(0), TaskId(1), TaskId(2)]);
+    }
+
+    #[test]
+    fn dag_all_skips_completed() {
+        let tasks = vec![
+            Task { completed: true, ..make_task(0, &[]) },
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let plan = resolve_all_dag(&tasks).unwrap();
+        assert_eq!(plan.steps, vec![TaskId(1), TaskId(2)]);
+    }
+
+    #[test]
+    fn dag_all_empty_when_all_done() {
+        let tasks = vec![
+            Task { completed: true, ..make_task(0, &[]) },
+            Task { completed: true, ..make_task(1, &[0]) },
+        ];
+        let plan = resolve_all_dag(&tasks).unwrap();
+        assert!(plan.steps.is_empty());
     }
 }
