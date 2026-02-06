@@ -16,15 +16,21 @@ async fn main() -> Result<()> {
 
     let mut printer = EventPrinter::new(temp_dir.path());
 
+    let prompt = "Read src/lib.rs, find the bug, fix it with Edit, \
+         then run cargo test to verify your fix.";
+
+    println!("{}  {}", "PROMPT".blue().bold(), prompt);
+
     run_step_with(
-        "Read src/lib.rs, find the bug, and fix it using Edit.",
+        prompt,
         Model::Haiku,
         temp_dir.path(),
-        &[BuiltinTool::Read, BuiltinTool::Edit],
+        &[BuiltinTool::Read, BuiltinTool::Edit, BuiltinTool::Bash],
         |msg| printer.print(msg),
     )
     .await?;
 
+    // External verification
     let output = Command::new("cargo")
         .arg("test")
         .current_dir(temp_dir.path())
