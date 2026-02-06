@@ -1,6 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
-use rstep::{helpers, model::Model, print::EventPrinter, step::run_step_with, tool::BuiltinTool};
+use rstep::{helpers, model::Model, print::EventPrinter, query::run_query_with, tool::BuiltinTool};
 use tempfile::tempdir;
 
 #[tokio::main]
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
 
     println!("{}  {}\n", "PROMPT".blue().bold(), prompt);
 
-    run_step_with(
+    run_query_with(
         prompt,
         Model::Haiku,
         temp_dir.path(),

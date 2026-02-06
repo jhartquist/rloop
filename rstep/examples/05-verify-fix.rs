@@ -4,7 +4,7 @@ use rstep::{
     helpers::{self, Template},
     model::Model,
     print::EventPrinter,
-    step::run_step_with,
+    query::run_query_with,
     tool::BuiltinTool,
 };
 
@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
 
     println!("{}  {}\n", "PROMPT".blue().bold(), prompt);
 
-    run_step_with(
+    run_query_with(
         prompt,
         Model::Haiku,
         temp_dir.path(),

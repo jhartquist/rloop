@@ -18,7 +18,7 @@ pub struct SessionId(pub String);
 pub struct ModelId(pub String);
 
 #[derive(Debug)]
-pub struct StepResult {
+pub struct QueryResult {
     pub session_id: SessionId,
     pub project_dir: PathBuf,
     pub model_id: ModelId,
@@ -28,16 +28,16 @@ pub struct StepResult {
     pub duration_ms: u64,
 }
 
-impl StepResult {
+impl QueryResult {
     pub fn print_summary(&self) {
         println!("{self}");
     }
 }
 
-impl fmt::Display for StepResult {
+impl fmt::Display for QueryResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let duration_secs = self.duration_ms as f64 / 1000.0;
-        writeln!(f, "── Step Result ────────────────────")?;
+        writeln!(f, "── Query Result ───────────────────")?;
         writeln!(f, "  Session:  {}", self.session_id.0)?;
         writeln!(f, "  Model:    {}", self.model_id.0)?;
         writeln!(f, "  Dir:      {}", self.project_dir.display())?;
@@ -55,22 +55,22 @@ impl fmt::Display for StepResult {
     }
 }
 
-pub async fn run_step(
+pub async fn run_query(
     prompt: &str,
     model: Model,
     project_dir: impl AsRef<Path>,
     tools: &[BuiltinTool],
-) -> Result<StepResult> {
-    run_step_with(prompt, model, project_dir, tools, |_| {}).await
+) -> Result<QueryResult> {
+    run_query_with(prompt, model, project_dir, tools, |_| {}).await
 }
 
-pub async fn run_step_with(
+pub async fn run_query_with(
     prompt: &str,
     model: Model,
     project_dir: impl AsRef<Path>,
     tools: &[BuiltinTool],
     mut on_message: impl FnMut(&Message),
-) -> Result<StepResult> {
+) -> Result<QueryResult> {
     let allowed_tools: HashSet<BuiltinTool> = tools.iter().copied().collect();
     let disallowed_tools: HashSet<BuiltinTool> = BuiltinTool::iter()
         .collect::<HashSet<_>>()
@@ -140,7 +140,7 @@ pub async fn run_step_with(
     let total_cost_usd = result_message.total_cost_usd.unwrap_or(0.0);
     let duration_ms = result_message.duration_ms;
 
-    Ok(StepResult {
+    Ok(QueryResult {
         session_id,
         project_dir: project_dir.as_ref().to_path_buf(),
         model_id,
