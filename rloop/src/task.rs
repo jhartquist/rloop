@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::model::Model;
@@ -86,12 +86,12 @@ struct TaskFrontmatter {
 /// Returns `Err` if no valid `---` delimited frontmatter is found.
 fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
     let trimmed = content.trim_start();
-    let rest = trimmed.strip_prefix("---").context("no opening --- delimiter")?;
+    let rest = trimmed
+        .strip_prefix("---")
+        .context("no opening --- delimiter")?;
 
     // Find the closing ---
-    let closing = rest
-        .find("\n---")
-        .context("no closing --- delimiter")?;
+    let closing = rest.find("\n---").context("no closing --- delimiter")?;
 
     let yaml = &rest[..closing];
     let after = &rest[closing + 4..]; // skip past "\n---"
@@ -186,7 +186,8 @@ pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPl
         bail!("target task {target} not found");
     }
 
-    let mut colors: HashMap<TaskId, Color> = task_map.keys().map(|&id| (id, Color::White)).collect();
+    let mut colors: HashMap<TaskId, Color> =
+        task_map.keys().map(|&id| (id, Color::White)).collect();
     let mut order: Vec<TaskId> = Vec::new();
 
     dfs(target, &task_map, &mut colors, &mut order)?;
@@ -206,7 +207,8 @@ pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPl
 /// Returns an error if a dependency is missing or a cycle is detected.
 pub fn resolve_all_dag(tasks: &[Task]) -> anyhow::Result<ExecutionPlan> {
     let task_map: HashMap<TaskId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
-    let mut colors: HashMap<TaskId, Color> = task_map.keys().map(|&id| (id, Color::White)).collect();
+    let mut colors: HashMap<TaskId, Color> =
+        task_map.keys().map(|&id| (id, Color::White)).collect();
     let mut order: Vec<TaskId> = Vec::new();
 
     // Visit every incomplete task to get a full topological ordering
@@ -495,11 +497,7 @@ Do the thing.
 
     #[test]
     fn dag_cycle_chain() {
-        let tasks = vec![
-            make_task(0, &[2]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[2]), make_task(1, &[0]), make_task(2, &[1])];
         assert!(resolve_dag(&tasks, TaskId(0)).is_err());
     }
 
@@ -529,11 +527,7 @@ Do the thing.
 
     #[test]
     fn dag_all_simple() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[1])];
         let plan = resolve_all_dag(&tasks).unwrap();
         assert_eq!(plan.steps, vec![TaskId(0), TaskId(1), TaskId(2)]);
     }
@@ -541,7 +535,10 @@ Do the thing.
     #[test]
     fn dag_all_skips_completed() {
         let tasks = vec![
-            Task { completed: true, ..make_task(0, &[]) },
+            Task {
+                completed: true,
+                ..make_task(0, &[])
+            },
             make_task(1, &[0]),
             make_task(2, &[1]),
         ];
@@ -552,8 +549,14 @@ Do the thing.
     #[test]
     fn dag_all_empty_when_all_done() {
         let tasks = vec![
-            Task { completed: true, ..make_task(0, &[]) },
-            Task { completed: true, ..make_task(1, &[0]) },
+            Task {
+                completed: true,
+                ..make_task(0, &[])
+            },
+            Task {
+                completed: true,
+                ..make_task(1, &[0])
+            },
         ];
         let plan = resolve_all_dag(&tasks).unwrap();
         assert!(plan.steps.is_empty());

@@ -88,10 +88,7 @@ impl SessionLogger {
         let session_dir = session_dir.as_ref();
         std::fs::create_dir_all(session_dir)?;
         let path = session_dir.join(format!("{session_id}.jsonl"));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
             writer: BufWriter::new(file),
             _session_id: session_id,
@@ -136,11 +133,7 @@ impl SessionLogger {
                 passed,
                 output,
             } => {
-                let icon = if *passed {
-                    "✓".green()
-                } else {
-                    "✗".red()
-                };
+                let icon = if *passed { "✓".green() } else { "✗".red() };
                 let status = if *passed { "passed" } else { "failed" };
                 eprintln!("{icon} verify task {task_id} `{command}`: {status}");
                 if !passed {
@@ -209,21 +202,54 @@ mod tests {
     #[test]
     fn serialize_all_variants() {
         let events = vec![
-            Event::SessionStarted { session_id: SessionId("s1".into()), target: TaskId(0) },
+            Event::SessionStarted {
+                session_id: SessionId("s1".into()),
+                target: TaskId(0),
+            },
             Event::TaskStarted { task_id: TaskId(1) },
-            Event::WorktreeCreated { task_id: TaskId(2), path: PathBuf::from("/tmp/wt") },
+            Event::WorktreeCreated {
+                task_id: TaskId(2),
+                path: PathBuf::from("/tmp/wt"),
+            },
             Event::PromptSent { task_id: TaskId(3) },
-            Event::VerificationRan { task_id: TaskId(4), command: "cargo test".into(), passed: true, output: "ok".into() },
-            Event::TaskCompleted { task_id: TaskId(5), summary: "done".into() },
-            Event::TaskFailed { task_id: TaskId(6), reason: "fail".into() },
-            Event::WorktreeMerged { task_id: TaskId(7), into_branch: "main".into() },
+            Event::VerificationRan {
+                task_id: TaskId(4),
+                command: "cargo test".into(),
+                passed: true,
+                output: "ok".into(),
+            },
+            Event::TaskCompleted {
+                task_id: TaskId(5),
+                summary: "done".into(),
+            },
+            Event::TaskFailed {
+                task_id: TaskId(6),
+                reason: "fail".into(),
+            },
+            Event::WorktreeMerged {
+                task_id: TaskId(7),
+                into_branch: "main".into(),
+            },
             Event::WorktreeCleanedUp { task_id: TaskId(8) },
-            Event::SessionComplete { branch: "rloop/05".into() },
-            Event::SessionAutoMerged { branch: "rloop/05".into(), into_branch: "main".into() },
+            Event::SessionComplete {
+                branch: "rloop/05".into(),
+            },
+            Event::SessionAutoMerged {
+                branch: "rloop/05".into(),
+                into_branch: "main".into(),
+            },
             Event::SessionCancelled,
-            Event::AssistantMessage { content: "hello".into() },
-            Event::ToolCall { name: "read".into(), input: json!({"path": "/foo"}) },
-            Event::ToolResult { name: "read".into(), output: json!("contents") },
+            Event::AssistantMessage {
+                content: "hello".into(),
+            },
+            Event::ToolCall {
+                name: "read".into(),
+                input: json!({"path": "/foo"}),
+            },
+            Event::ToolResult {
+                name: "read".into(),
+                output: json!("contents"),
+            },
         ];
         for event in &events {
             let json = serde_json::to_string(event);
@@ -233,7 +259,9 @@ mod tests {
 
     #[test]
     fn serialize_task_id_in_event() {
-        let event = Event::TaskStarted { task_id: TaskId(42) };
+        let event = Event::TaskStarted {
+            task_id: TaskId(42),
+        };
         let json = serde_json::to_string(&event).unwrap();
         // TaskId serializes as number (42), not string ("42")
         assert!(json.contains(r#""task_id":42"#));
@@ -278,7 +306,14 @@ mod tests {
     fn logger_multiple_events_append() {
         let dir = tempfile::tempdir().unwrap();
         let mut logger = SessionLogger::new(dir.path(), SessionId("test".into())).unwrap();
-        logger.log(&Event::TaskStarted { task_id: TaskId(0) }).unwrap();
-        logger.log(&Event::TaskCompleted { task_id: TaskId(0), summary: "done".into() }).unwrap();
+        logger
+            .log(&Event::TaskStarted { task_id: TaskId(0) })
+            .unwrap();
+        logger
+            .log(&Event::TaskCompleted {
+                task_id: TaskId(0),
+                summary: "done".into(),
+            })
+            .unwrap();
     }
 }

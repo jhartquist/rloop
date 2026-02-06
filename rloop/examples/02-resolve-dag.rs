@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use rloop::task::{load_all_tasks, resolve_all_dag, resolve_dag, TaskId};
+use rloop::task::{TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
 
 fn main() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
@@ -12,7 +12,10 @@ fn main() -> anyhow::Result<()> {
 
     // Diamond DAG: 0 -> {1, 2} -> 3
     fs::write(tasks_dir.join("00.md"), "---\nid: 0\n---\n# Root task\n")?;
-    fs::write(tasks_dir.join("01.md"), "---\nid: 1\ndepends_on: [0]\n---\n# Branch A\n")?;
+    fs::write(
+        tasks_dir.join("01.md"),
+        "---\nid: 1\ndepends_on: [0]\n---\n# Branch A\n",
+    )?;
     fs::write(
         tasks_dir.join("02.md"),
         "---\nid: 2\ndepends_on: [0]\n---\n# Branch B\n",

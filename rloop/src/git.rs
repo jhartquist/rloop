@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 use crate::task::TaskId;
 
@@ -117,12 +117,7 @@ pub fn merge_worktree(
         .with_context(|| format!("failed to checkout {into_branch}"))?;
 
     git(repo, &["merge", &worktree.branch])
-        .with_context(|| {
-            format!(
-                "failed to merge {} into {into_branch}",
-                worktree.branch
-            )
-        })?;
+        .with_context(|| format!("failed to merge {} into {into_branch}", worktree.branch))?;
 
     Ok(())
 }
@@ -134,10 +129,7 @@ pub fn merge_worktree(
 pub fn cleanup_worktree(repo: impl AsRef<Path>, worktree: &Worktree) -> anyhow::Result<()> {
     let repo = repo.as_ref();
     // Try unlocking — ignore errors since it may not be locked
-    let wt_path_str = worktree
-        .path
-        .to_str()
-        .context("non-UTF-8 worktree path")?;
+    let wt_path_str = worktree.path.to_str().context("non-UTF-8 worktree path")?;
 
     let _ = git(repo, &["worktree", "unlock", wt_path_str]);
 

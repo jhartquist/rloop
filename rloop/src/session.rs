@@ -3,14 +3,14 @@ use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::git::{cleanup_worktree, create_worktree, lock_worktree, merge_worktree, Worktree};
+use crate::git::{Worktree, cleanup_worktree, create_worktree, lock_worktree, merge_worktree};
 use crate::log::{Event, SessionLogger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome};
-use crate::task::{load_all_tasks, resolve_all_dag, resolve_dag, Task, TaskId};
+use crate::task::{Task, TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
 
 /// Unique identifier for a session (one invocation of rloop).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -264,8 +264,7 @@ pub async fn run_session_with<E: StepExecutor>(
         },
     );
 
-    let parent_branch =
-        current_branch(repo).context("failed to determine current branch")?;
+    let parent_branch = current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve DAG
     let tasks_dir = repo.join(".rloop").join("tasks");
@@ -377,8 +376,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         },
     );
 
-    let parent_branch =
-        current_branch(repo).context("failed to determine current branch")?;
+    let parent_branch = current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve full DAG
     let tasks_dir = repo.join(".rloop").join("tasks");
@@ -386,7 +384,12 @@ pub async fn run_all_session_with<E: StepExecutor>(
     let plan = resolve_all_dag(&tasks)?;
 
     if plan.steps.is_empty() {
-        emit(&mut logger, &Event::SessionComplete { branch: parent_branch.clone() });
+        emit(
+            &mut logger,
+            &Event::SessionComplete {
+                branch: parent_branch.clone(),
+            },
+        );
         return Ok(SessionResult {
             session_id,
             branch: parent_branch,
