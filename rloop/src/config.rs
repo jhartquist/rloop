@@ -94,10 +94,10 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
 }
 
 /// Initialize `.rloop/` directory structure in a repo.
-/// Creates directories, default config, adds gitignore entries.
+/// Creates directories, default config, `.gitignore`, and commits the scaffolding.
 ///
 /// # Errors
-/// Returns an error if directory creation or file writing fails due to permissions or I/O issues.
+/// Returns an error if directory creation, file writing, or git commands fail.
 pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
     let repo = repo.as_ref();
     let rloop_dir = repo.join(".rloop");
@@ -109,6 +109,18 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
     let config_path = rloop_dir.join("config.toml");
     if !config_path.exists() {
         fs::write(&config_path, Config::default().to_toml()?)?;
+    }
+
+    let gitignore_path = rloop_dir.join(".gitignore");
+    if !gitignore_path.exists() {
+        fs::write(&gitignore_path, "worktrees/\nsessions/\n")?;
+    }
+
+    // Commit scaffolding (idempotent — only commits if there are staged changes)
+    let _ = crate::git::git(repo, &["add", ".rloop/config.toml", ".rloop/.gitignore"]);
+    let status = crate::git::git(repo, &["status", "--porcelain"]).unwrap_or_default();
+    if !status.is_empty() {
+        let _ = crate::git::git(repo, &["commit", "-m", "rloop: init"]);
     }
 
     Ok(rloop_dir)
@@ -172,6 +184,7 @@ mod tests {
         assert!(rloop_dir.join("tasks").is_dir());
         assert!(rloop_dir.join("worktrees").is_dir());
         assert!(rloop_dir.join("sessions").is_dir());
+        assert!(rloop_dir.join(".gitignore").exists());
     }
 
     #[test]
@@ -200,5 +213,51 @@ mod tests {
         assert!(matches!(loaded.model, Model::Opus));
         assert_eq!(loaded.max_turns, 50);
         assert_eq!(loaded.max_retries, 10);
+    }
+
+    #[test]
+    fn init_creates_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let rloop_dir = init_rloop_dir(dir.path()).unwrap();
+        let content = std::fs::read_to_string(rloop_dir.join(".gitignore")).unwrap();
+        assert!(content.contains("worktrees/"));
+        assert!(content.contains("sessions/"));
+    }
+
+    #[test]
+    fn init_commits_scaffolding() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+
+        // Set up a git repo with initial commit
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+
+        run(&["init"]);
+        run(&["config", "user.email", "test@test.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("README.md"), "# test\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+
+        init_rloop_dir(repo).unwrap();
+
+        // Verify a commit was made with the scaffolding
+        let log = run(&["log", "--oneline"]);
+        assert!(log.contains("rloop: init"));
     }
 }
