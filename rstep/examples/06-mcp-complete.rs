@@ -76,13 +76,10 @@ async fn main() -> Result<()> {
 
     // -- Build allowed / disallowed tool lists ----------------------------------
 
-    let allowed_builtins: HashSet<BuiltinTool> = [
-        BuiltinTool::Read,
-        BuiltinTool::Edit,
-        BuiltinTool::Bash,
-    ]
-    .into_iter()
-    .collect();
+    let allowed_builtins: HashSet<BuiltinTool> =
+        [BuiltinTool::Read, BuiltinTool::Edit, BuiltinTool::Bash]
+            .into_iter()
+            .collect();
 
     let disallowed_builtins: HashSet<BuiltinTool> = BuiltinTool::iter()
         .collect::<HashSet<_>>()
@@ -142,13 +139,14 @@ async fn main() -> Result<()> {
     if let Some(text) = summary.lock().unwrap().as_ref() {
         println!("\n{}  {}", "SUCCESS".green().bold(), text);
     } else {
-        println!(
-            "\n{}  complete tool was not called",
-            "FAILED".red().bold()
-        );
+        println!("\n{}  complete tool was not called", "FAILED".red().bold());
     }
 
-    if let Some(Message::Result(res)) = messages.iter().rev().find(|m| matches!(m, Message::Result(_))) {
+    if let Some(Message::Result(res)) = messages
+        .iter()
+        .rev()
+        .find(|m| matches!(m, Message::Result(_)))
+    {
         let cost = res.total_cost_usd.unwrap_or(0.0);
         let duration = res.duration_ms as f64 / 1000.0;
         println!("{}  ${cost:.6} · {duration:.2}s", "  COST".dimmed());
