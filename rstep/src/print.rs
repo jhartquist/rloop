@@ -70,16 +70,30 @@ impl EventPrinter {
                     return;
                 }
 
-                // Fallback: raw content string
+                // Fallback: raw content string (some tools put results here)
                 if let Some(text) = user
                     .extra
                     .pointer("/message/content/0/content")
                     .and_then(|v| v.as_str())
                 {
                     let label = "   RES".yellow().bold();
+                    let name = tool_info
+                        .as_ref()
+                        .map(|(n, _)| n.as_str())
+                        .unwrap_or("?");
+                    println!("{label}  {}", name.dimmed());
                     for line in text.lines() {
-                        println!("{label}  {}", line.dimmed());
+                        println!("        {}", line.dimmed());
                     }
+                    return;
+                }
+
+                // Debug: dump unknown User message structures
+                if std::env::var("RSTEP_DEBUG").is_ok() {
+                    eprintln!(
+                        "DEBUG user.extra: {}",
+                        serde_json::to_string_pretty(&user.extra).unwrap_or_default()
+                    );
                 }
             }
 
@@ -99,6 +113,7 @@ impl EventPrinter {
 
     fn print_tool_call(&self, name: &str, input: &serde_json::Value) {
         let label = "  CALL".yellow().bold();
+        let pad = "      ";
         match name {
             "Read" => {
                 let path = input
@@ -106,6 +121,42 @@ impl EventPrinter {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
                 println!("{label}  {} {}", "Read".dimmed(), self.rel(path).dimmed());
+            }
+            "Edit" => {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                println!("{label}  {} {}", "Edit".dimmed(), self.rel(path).dimmed());
+                if let Some(old) = input.get("old_string").and_then(|v| v.as_str()) {
+                    for line in old.lines() {
+                        println!("{pad}  {} {}", "-".red(), line.dimmed());
+                    }
+                }
+                if let Some(new) = input.get("new_string").and_then(|v| v.as_str()) {
+                    for line in new.lines() {
+                        println!("{pad}  {} {}", "+".green(), line.dimmed());
+                    }
+                }
+            }
+            "Write" => {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                println!("{label}  {} {}", "Write".dimmed(), self.rel(path).dimmed());
+                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
+                    for line in content.lines() {
+                        println!("{pad}  {}", line.dimmed());
+                    }
+                }
+            }
+            "Bash" => {
+                let cmd = input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                println!("{label}  {} {}", "Bash".dimmed(), cmd.dimmed());
             }
             other => {
                 let param = self.extract_key_param(input);
@@ -124,9 +175,9 @@ impl EventPrinter {
         tur: &serde_json::Value,
     ) {
         let label = "   RES".yellow().bold();
+        let name = tool_info.map(|(n, _)| n.as_str()).unwrap_or("?");
 
-        // extra.tool_use_result shape:
-        //   { "type": "text", "file": { "filePath": "...", "content": "...", "numLines": N } }
+        // Read result: { "type": "text", "file": { "filePath": "...", "content": "...", "numLines": N } }
         if let Some(file) = tur.get("file") {
             let path = file.get("filePath").and_then(|v| v.as_str()).unwrap_or("?");
             let num_lines = file.get("numLines").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -142,8 +193,27 @@ impl EventPrinter {
             return;
         }
 
-        if let Some(name) = tool_info.map(|(n, _)| n.as_str()) {
-            println!("{label}  {}", format!("{name} ok").dimmed());
+        // Text result (Bash output, Edit/Write confirmations)
+        if let Some(text) = tur
+            .as_str()
+            .or_else(|| tur.get("text").and_then(|v| v.as_str()))
+            .or_else(|| tur.get("content").and_then(|v| v.as_str()))
+        {
+            println!("{label}  {}", name.dimmed());
+            for line in text.lines() {
+                println!("        {}", line.dimmed());
+            }
+            return;
+        }
+
+        println!("{label}  {}", format!("{name} ok").dimmed());
+
+        // Debug: dump unknown result structures
+        if std::env::var("RSTEP_DEBUG").is_ok() {
+            eprintln!(
+                "DEBUG tool_use_result: {}",
+                serde_json::to_string_pretty(tur).unwrap_or_default()
+            );
         }
     }
 
