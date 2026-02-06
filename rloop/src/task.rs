@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use anyhow::{bail, Context};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::model::Model;
 
@@ -38,19 +40,178 @@ pub struct ExecutionPlan {
     pub steps: Vec<TaskId>,
 }
 
+// ---------------------------------------------------------------------------
+// Private: frontmatter parsing
+// ---------------------------------------------------------------------------
+
+fn default_model() -> Model {
+    Model::Sonnet
+}
+
+/// Deserialize verification from either a single string or a list of strings.
+fn deserialize_verification<'de, D>(
+    deserializer: D,
+) -> Result<Option<VerificationCommands>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    let maybe: Option<StringOrVec> = Option::deserialize(deserializer)?;
+    Ok(maybe.map(|v| match v {
+        StringOrVec::Single(s) => VerificationCommands(vec![s]),
+        StringOrVec::Multiple(list) => VerificationCommands(list),
+    }))
+}
+
+#[derive(Deserialize)]
+struct TaskFrontmatter {
+    id: u32,
+    #[serde(default = "default_model")]
+    model: Model,
+    #[serde(default)]
+    depends_on: Vec<u32>,
+    #[serde(default, deserialize_with = "deserialize_verification")]
+    verification: Option<VerificationCommands>,
+    #[serde(default)]
+    completed: bool,
+}
+
+/// Split file content into YAML block and description body.
+/// Returns `Err` if no valid `---` delimited frontmatter is found.
+fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
+    let trimmed = content.trim_start();
+    let rest = trimmed.strip_prefix("---").context("no opening --- delimiter")?;
+
+    // Find the closing ---
+    let closing = rest
+        .find("\n---")
+        .context("no closing --- delimiter")?;
+
+    let yaml = &rest[..closing];
+    let after = &rest[closing + 4..]; // skip past "\n---"
+
+    // Strip one leading newline from the description if present
+    let description = after.strip_prefix('\n').unwrap_or(after);
+
+    Ok((yaml, description))
+}
+
 /// Load a single task from a markdown file.
-pub fn load_task(_path: &Path) -> anyhow::Result<Task> {
-    todo!()
+pub fn load_task(path: &Path) -> anyhow::Result<Task> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read task file: {}", path.display()))?;
+
+    if content.is_empty() {
+        bail!("task file is empty: {}", path.display());
+    }
+
+    let (yaml, description) = split_frontmatter(&content)
+        .with_context(|| format!("invalid frontmatter in {}", path.display()))?;
+
+    let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
+        .with_context(|| format!("failed to parse YAML in {}", path.display()))?;
+
+    Ok(Task {
+        id: TaskId(fm.id),
+        model: fm.model,
+        depends_on: fm.depends_on.into_iter().map(TaskId).collect(),
+        verification: fm.verification,
+        completed: fm.completed,
+        description: description.to_string(),
+        source_path: path.to_path_buf(),
+    })
+}
+
+/// Returns true if the filename stem is all ASCII digits (e.g. "00", "01", "123").
+fn is_task_filename(path: &Path) -> bool {
+    let Some(ext) = path.extension() else {
+        return false;
+    };
+    if ext != "md" {
+        return false;
+    }
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    !stem.is_empty() && stem.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Load all tasks from a directory of markdown files.
-pub fn load_all_tasks(_dir: &Path) -> anyhow::Result<Vec<Task>> {
-    todo!()
+pub fn load_all_tasks(dir: &Path) -> anyhow::Result<Vec<Task>> {
+    let mut tasks: Vec<Task> = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read task directory: {}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| is_task_filename(p))
+        .map(|p| load_task(&p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    tasks.sort_by_key(|t| t.id.0);
+    Ok(tasks)
+}
+
+// ---------------------------------------------------------------------------
+// DAG resolution via DFS topological sort
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Color {
+    White,
+    Gray,
+    Black,
 }
 
 /// Resolve the dependency DAG for a target task, returning execution order.
-pub fn resolve_dag(_tasks: &[Task], _target: TaskId) -> anyhow::Result<ExecutionPlan> {
-    todo!()
+pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPlan> {
+    let task_map: HashMap<TaskId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
+
+    if !task_map.contains_key(&target) {
+        bail!("target task {target} not found");
+    }
+
+    let mut colors: HashMap<TaskId, Color> = task_map.keys().map(|&id| (id, Color::White)).collect();
+    let mut order: Vec<TaskId> = Vec::new();
+
+    dfs(target, &task_map, &mut colors, &mut order)?;
+
+    Ok(ExecutionPlan {
+        target,
+        steps: order,
+    })
+}
+
+fn dfs(
+    node: TaskId,
+    task_map: &HashMap<TaskId, &Task>,
+    colors: &mut HashMap<TaskId, Color>,
+    order: &mut Vec<TaskId>,
+) -> anyhow::Result<()> {
+    let color = colors.get(&node).copied();
+
+    match color {
+        Some(Color::Black) => return Ok(()),
+        Some(Color::Gray) => bail!("cycle detected: task {node} is part of a dependency cycle"),
+        None => bail!("dependency {node} not found in task list"),
+        Some(Color::White) => {}
+    }
+
+    colors.insert(node, Color::Gray);
+
+    let task = task_map[&node];
+    for dep in &task.depends_on {
+        dfs(*dep, task_map, colors, order)?;
+    }
+
+    colors.insert(node, Color::Black);
+    order.push(node);
+
+    Ok(())
 }
 
 #[cfg(test)]
