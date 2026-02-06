@@ -1,4 +1,5 @@
 use anyhow::Result;
+use colored::Colorize;
 use rstep::{
     helpers::{self, Template},
     model::Model,
@@ -13,8 +14,12 @@ async fn main() -> Result<()> {
 
     let mut printer = EventPrinter::new(temp_dir.path());
 
+    let prompt = "Read src/lib.rs and describe what the add function does. Is it correct?";
+
+    println!("{}  {}", "PROMPT".blue().bold(), prompt);
+
     run_step_with(
-        "Read src/lib.rs and describe what the add function does. Is it correct?",
+        prompt,
         Model::Haiku,
         temp_dir.path(),
         &[BuiltinTool::Read],
