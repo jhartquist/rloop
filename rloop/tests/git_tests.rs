@@ -1,0 +1,169 @@
+mod helpers;
+
+use rloop::git::{
+    cleanup_worktree, create_worktree, lock_worktree, merge_worktree, unlock_worktree,
+};
+use rloop::task::TaskId;
+
+#[test]
+fn create_worktree_creates_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    assert!(wt.path.exists());
+    assert!(wt.path.is_dir());
+}
+
+#[test]
+fn create_worktree_creates_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(1), "main").unwrap();
+    assert!(wt.branch.contains("rloop"));
+}
+
+#[test]
+fn create_worktree_branches_from_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    // The worktree should contain files from the base branch
+    assert!(wt.path.join("README.md").exists());
+}
+
+#[test]
+fn create_worktree_returns_correct_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(5), "main").unwrap();
+    assert_eq!(wt.task_id, TaskId(5));
+    assert!(!wt.branch.is_empty());
+    assert!(wt.path.exists());
+}
+
+#[test]
+fn lock_prevents_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    lock_worktree(&wt).unwrap();
+    // Locked worktree: `git worktree remove` should fail
+    let output = std::process::Command::new("git")
+        .args(["worktree", "remove", wt.path.to_str().unwrap()])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}
+
+#[test]
+fn unlock_allows_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    lock_worktree(&wt).unwrap();
+    unlock_worktree(&wt).unwrap();
+    // Now removal should succeed
+    let output = std::process::Command::new("git")
+        .args(["worktree", "remove", wt.path.to_str().unwrap()])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+}
+
+#[test]
+fn merge_worktree_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+
+    // Make a change in the worktree
+    std::fs::write(wt.path.join("new_file.txt"), "hello from worktree\n").unwrap();
+    let run = |args: &[&str], cwd: &std::path::Path| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    };
+    run(&["add", "."], &wt.path);
+    run(&["commit", "-m", "worktree change"], &wt.path);
+
+    merge_worktree(&repo, &wt, "main").unwrap();
+
+    // Verify the change is on main
+    run(&["checkout", "main"], &repo);
+    assert!(repo.join("new_file.txt").exists());
+}
+
+#[test]
+fn cleanup_removes_dir_and_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    let wt_path = wt.path.clone();
+    let branch = wt.branch.clone();
+
+    cleanup_worktree(&repo, &wt).unwrap();
+
+    assert!(!wt_path.exists());
+    // Branch should be deleted
+    let output = std::process::Command::new("git")
+        .args(["branch", "--list", &branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let branches = String::from_utf8_lossy(&output.stdout);
+    assert!(!branches.contains(&branch));
+}
+
+#[test]
+fn cleanup_unlocks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    lock_worktree(&wt).unwrap();
+    // cleanup should handle the unlock internally
+    cleanup_worktree(&repo, &wt).unwrap();
+    assert!(!wt.path.exists());
+}
+
+#[test]
+fn full_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+
+    // Create
+    let wt = create_worktree(&repo, TaskId(3), "main").unwrap();
+    assert!(wt.path.exists());
+
+    // Lock
+    lock_worktree(&wt).unwrap();
+
+    // Work in worktree
+    std::fs::write(wt.path.join("feature.rs"), "fn feature() {}\n").unwrap();
+    let run = |args: &[&str], cwd: &std::path::Path| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    };
+    run(&["add", "."], &wt.path);
+    run(&["commit", "-m", "add feature"], &wt.path);
+
+    // Unlock
+    unlock_worktree(&wt).unwrap();
+
+    // Merge
+    merge_worktree(&repo, &wt, "main").unwrap();
+
+    // Cleanup
+    cleanup_worktree(&repo, &wt).unwrap();
+    assert!(!wt.path.exists());
+
+    // Verify merged
+    run(&["checkout", "main"], &repo);
+    assert!(repo.join("feature.rs").exists());
+}

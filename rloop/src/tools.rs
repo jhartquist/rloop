@@ -15,3 +15,22 @@ pub fn create_tools(
 ) -> McpSdkServerConfig {
     todo!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::VerificationCommands;
+
+    #[test]
+    fn create_tools_with_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmds = VerificationCommands(vec!["cargo test".into()]);
+        let _server = create_tools(Some(&cmds), dir.path());
+    }
+
+    #[test]
+    fn create_tools_without_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let _server = create_tools(None, dir.path());
+    }
+}

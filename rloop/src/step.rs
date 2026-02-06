@@ -32,3 +32,50 @@ pub async fn execute_step(
 ) -> anyhow::Result<StepResult> {
     todo!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_outcome_variants() {
+        let success = StepOutcome::Success {
+            summary: "did the thing".into(),
+        };
+        assert!(matches!(success, StepOutcome::Success { summary } if summary == "did the thing"));
+
+        let failed = StepOutcome::Failed {
+            reason: "tests failed".into(),
+            learnings: "need to add dep".into(),
+        };
+        assert!(matches!(failed, StepOutcome::Failed { reason, .. } if reason == "tests failed"));
+    }
+
+    #[test]
+    fn step_result_fields() {
+        let result = StepResult {
+            task_id: TaskId(5),
+            outcome: StepOutcome::Success { summary: "ok".into() },
+            model: Model::Sonnet,
+            cost_usd: 0.05,
+            duration: Duration::from_secs(30),
+            cc_session_id: None,
+        };
+        assert_eq!(result.task_id, TaskId(5));
+        assert!(matches!(result.model, Model::Sonnet));
+        assert!(result.cc_session_id.is_none());
+
+        let result_with_session = StepResult {
+            task_id: TaskId(3),
+            outcome: StepOutcome::Failed {
+                reason: "fail".into(),
+                learnings: "learn".into(),
+            },
+            model: Model::Opus,
+            cost_usd: 0.10,
+            duration: Duration::from_secs(60),
+            cc_session_id: Some("session-abc".into()),
+        };
+        assert_eq!(result_with_session.cc_session_id.as_deref(), Some("session-abc"));
+    }
+}
