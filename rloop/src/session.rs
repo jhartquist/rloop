@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
-use std::process::Command;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::git::{Worktree, cleanup_worktree, create_worktree, lock_worktree, merge_worktree};
+use crate::git::{
+    self, Worktree, cleanup_worktree, create_worktree, lock_worktree, merge_worktree,
+};
 use crate::log::{Event, SessionLogger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome};
 use crate::task::{Task, TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
@@ -39,30 +40,13 @@ pub struct SessionResult {
 // Git helpers (session-level branching)
 // ---------------------------------------------------------------------------
 
-fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .context("failed to run git")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {stderr}", args.join(" "));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn current_branch(repo: &Path) -> anyhow::Result<String> {
-    git(repo, &["branch", "--show-current"])
-}
-
 fn create_session_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
-    git(repo, &["checkout", "-b", name])?;
+    git::git(repo, &["checkout", "-b", name])?;
     Ok(())
 }
 
 fn checkout_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
-    git(repo, &["checkout", name])?;
+    git::git(repo, &["checkout", name])?;
     Ok(())
 }
 
@@ -264,7 +248,7 @@ pub async fn run_session_with<E: StepExecutor>(
         },
     );
 
-    let parent_branch = current_branch(repo).context("failed to determine current branch")?;
+    let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve DAG
     let tasks_dir = repo.join(".rloop").join("tasks");
@@ -376,7 +360,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         },
     );
 
-    let parent_branch = current_branch(repo).context("failed to determine current branch")?;
+    let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve full DAG
     let tasks_dir = repo.join(".rloop").join("tasks");
@@ -476,7 +460,7 @@ fn finalize_session(
 ) -> anyhow::Result<bool> {
     if auto_merge && failed_tasks.is_empty() && skipped_tasks.is_empty() {
         checkout_branch(repo, parent_branch)?;
-        git(repo, &["merge", session_branch]).with_context(|| {
+        git::git(repo, &["merge", session_branch]).with_context(|| {
             format!("failed to auto-merge {session_branch} into {parent_branch}")
         })?;
 

@@ -12,8 +12,8 @@ pub struct Worktree {
     pub task_id: TaskId,
 }
 
-/// Run a git command in the given directory, returning stdout on success.
-fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+/// Run a git command in the given directory, returning trimmed stdout on success.
+pub(crate) fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -23,7 +23,15 @@ fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git {} failed: {stderr}", args.join(" "));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Return the current branch name.
+///
+/// # Errors
+/// Returns an error if the git command fails (e.g. detached HEAD, not a repo).
+pub fn current_branch(repo: impl AsRef<Path>) -> anyhow::Result<String> {
+    git(repo.as_ref(), &["branch", "--show-current"])
 }
 
 /// Create a new worktree for a task, branched off `base_branch`.
