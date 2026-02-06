@@ -29,7 +29,10 @@ fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
 /// Create a new worktree for a task, branched off `base_branch`.
 ///
 /// The worktree lives at `{repo}/.rloop/worktrees/{task_id:02}/` on a new
-/// branch named `rloop/{task_id:02}`.
+/// branch named `rloop/wt/{task_id:02}`.
+///
+/// # Errors
+/// Returns an error if directory creation fails or git worktree command fails.
 pub fn create_worktree(
     repo: &Path,
     task_id: TaskId,
@@ -41,7 +44,7 @@ pub fn create_worktree(
         .with_context(|| format!("failed to create {}", worktree_dir.display()))?;
 
     let wt_path = worktree_dir.join(&label);
-    let branch = format!("rloop/{label}");
+    let branch = format!("rloop/wt/{label}");
 
     git(
         repo,
@@ -64,6 +67,9 @@ pub fn create_worktree(
 }
 
 /// Lock a worktree to prevent accidental removal.
+///
+/// # Errors
+/// Returns an error if the git worktree lock command fails.
 pub fn lock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
     git(
         &worktree.path,
@@ -78,6 +84,9 @@ pub fn lock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
 }
 
 /// Unlock a previously locked worktree.
+///
+/// # Errors
+/// Returns an error if the git worktree unlock command fails.
 pub fn unlock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
     git(
         &worktree.path,
@@ -94,6 +103,9 @@ pub fn unlock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
 /// Merge a worktree's branch into the target branch.
 ///
 /// Checks out `into_branch` in the main repo and merges the worktree branch.
+///
+/// # Errors
+/// Returns an error if checkout or merge commands fail.
 pub fn merge_worktree(
     repo: &Path,
     worktree: &Worktree,
@@ -114,6 +126,9 @@ pub fn merge_worktree(
 }
 
 /// Clean up a worktree: unlock (if locked), remove, and delete the branch.
+///
+/// # Errors
+/// Returns an error if worktree removal or branch deletion commands fail.
 pub fn cleanup_worktree(repo: &Path, worktree: &Worktree) -> anyhow::Result<()> {
     // Try unlocking — ignore errors since it may not be locked
     let wt_path_str = worktree
