@@ -78,6 +78,8 @@ async fn single_task_no_deps() {
         .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
     assert!(result.failed_tasks.is_empty());
+    // Main working tree stays on original branch
+    assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
 }
 
 #[tokio::test]
@@ -158,6 +160,7 @@ async fn failure_blocks_dependents() {
     assert!(result.completed_tasks.contains(&TaskId(0)));
     assert!(result.failed_tasks.contains(&TaskId(1)));
     assert!(result.skipped_tasks.contains(&TaskId(2)));
+    assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
 }
 
 #[tokio::test]
@@ -208,6 +211,8 @@ async fn session_branch_naming() {
         .await
         .unwrap();
     assert_eq!(result.branch, "rloop-05");
+    // Main working tree untouched
+    assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
 }
 
 #[tokio::test]
@@ -287,6 +292,7 @@ async fn run_all_tasks() {
         .unwrap();
     assert_eq!(result.completed_tasks.len(), 3);
     assert!(result.branch.contains("rloop-all-"));
+    assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
 }
 
 #[tokio::test]

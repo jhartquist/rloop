@@ -1,7 +1,7 @@
 mod helpers;
 
 use rloop::git::{
-    cleanup_worktree, create_worktree, lock_worktree, merge_worktree, unlock_worktree,
+    cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree, unlock_worktree,
 };
 use rloop::task::TaskId;
 
@@ -73,28 +73,35 @@ fn unlock_allows_removal() {
 }
 
 #[test]
-fn merge_worktree_success() {
+fn fast_forward_ref_moves_branch() {
     let dir = tempfile::tempdir().unwrap();
     let repo = helpers::init_git_repo(dir.path());
-    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
 
-    // Make a change in the worktree
-    std::fs::write(wt.path.join("new_file.txt"), "hello from worktree\n").unwrap();
+    // Create a session branch to fast-forward
     let run = |args: &[&str], cwd: &std::path::Path| {
-        std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
             .output()
-            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
+    run(&["branch", "rloop-00"], &repo);
+
+    let wt = create_worktree(&repo, TaskId(0), "rloop-00").unwrap();
+
+    // Make a change in the worktree
+    std::fs::write(wt.path.join("new_file.txt"), "hello from worktree\n").unwrap();
     run(&["add", "."], &wt.path);
     run(&["commit", "-m", "worktree change"], &wt.path);
 
-    merge_worktree(&repo, &wt, "main").unwrap();
+    let wt_tip = run(&["rev-parse", "HEAD"], &wt.path);
 
-    // Verify the change is on main
-    run(&["checkout", "main"], &repo);
-    assert!(repo.join("new_file.txt").exists());
+    fast_forward_ref(&repo, "rloop-00", &wt.branch).unwrap();
+
+    // Verify session branch points at worktree tip
+    let session_tip = run(&["rev-parse", "rloop-00"], &repo);
+    assert_eq!(session_tip, wt_tip);
 }
 
 #[test]
@@ -134,8 +141,18 @@ fn full_lifecycle() {
     let dir = tempfile::tempdir().unwrap();
     let repo = helpers::init_git_repo(dir.path());
 
-    // Create
-    let wt = create_worktree(&repo, TaskId(3), "main").unwrap();
+    // Create session branch and worktree
+    let run = |args: &[&str], cwd: &std::path::Path| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    run(&["branch", "rloop-03"], &repo);
+
+    let wt = create_worktree(&repo, TaskId(3), "rloop-03").unwrap();
     assert!(wt.path.exists());
 
     // Lock
@@ -143,27 +160,20 @@ fn full_lifecycle() {
 
     // Work in worktree
     std::fs::write(wt.path.join("feature.rs"), "fn feature() {}\n").unwrap();
-    let run = |args: &[&str], cwd: &std::path::Path| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .unwrap()
-    };
     run(&["add", "."], &wt.path);
     run(&["commit", "-m", "add feature"], &wt.path);
 
     // Unlock
     unlock_worktree(&wt).unwrap();
 
-    // Merge
-    merge_worktree(&repo, &wt, "main").unwrap();
+    // Fast-forward session branch
+    fast_forward_ref(&repo, "rloop-03", &wt.branch).unwrap();
 
     // Cleanup
     cleanup_worktree(&repo, &wt).unwrap();
     assert!(!wt.path.exists());
 
-    // Verify merged
-    run(&["checkout", "main"], &repo);
-    assert!(repo.join("feature.rs").exists());
+    // Verify session branch has the commit
+    let log = run(&["log", "--oneline", "rloop-03"], &repo);
+    assert!(log.contains("add feature"));
 }

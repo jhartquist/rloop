@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::git::{
-    self, Worktree, cleanup_worktree, create_worktree, lock_worktree, merge_worktree,
+    self, Worktree, cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree,
 };
 use crate::log::{Event, SessionLogger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome};
@@ -41,12 +41,7 @@ pub struct SessionResult {
 // ---------------------------------------------------------------------------
 
 fn create_session_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
-    git::git(repo, &["checkout", "-b", name])?;
-    Ok(())
-}
-
-fn checkout_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
-    git::git(repo, &["checkout", name])?;
+    git::git(repo, &["branch", name])?;
     Ok(())
 }
 
@@ -107,7 +102,7 @@ async fn execute_task<E: StepExecutor>(
         finish_successful_task(repo, &worktree, session_branch, task_id, logger)?;
         Ok(TaskOutcome::Success)
     } else {
-        finish_failed_task(repo, &worktree, session_branch, task_id, logger)?;
+        finish_failed_task(repo, &worktree, task_id, logger)?;
         Ok(TaskOutcome::Failed)
     }
 }
@@ -164,7 +159,7 @@ async fn run_with_retries<E: StepExecutor>(
     }
 }
 
-/// Merge a successful task's worktree into the session branch and clean up.
+/// Fast-forward the session branch to the task's tip and clean up.
 fn finish_successful_task(
     repo: &Path,
     worktree: &Worktree,
@@ -172,9 +167,8 @@ fn finish_successful_task(
     task_id: TaskId,
     logger: &mut SessionLogger,
 ) -> anyhow::Result<()> {
-    checkout_branch(repo, session_branch)?;
-    merge_worktree(repo, worktree, session_branch)
-        .with_context(|| format!("failed to merge worktree for task {task_id}"))?;
+    fast_forward_ref(repo, session_branch, &worktree.branch)
+        .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
 
     emit(
         logger,
@@ -195,11 +189,9 @@ fn finish_successful_task(
 fn finish_failed_task(
     repo: &Path,
     worktree: &Worktree,
-    session_branch: &str,
     task_id: TaskId,
     logger: &mut SessionLogger,
 ) -> anyhow::Result<()> {
-    checkout_branch(repo, session_branch)?;
     cleanup_worktree(repo, worktree)
         .with_context(|| format!("failed to cleanup worktree for failed task {task_id}"))?;
 
@@ -459,10 +451,14 @@ fn finalize_session(
     logger: &mut SessionLogger,
 ) -> anyhow::Result<bool> {
     if auto_merge && failed_tasks.is_empty() && skipped_tasks.is_empty() {
-        checkout_branch(repo, parent_branch)?;
-        git::git(repo, &["merge", session_branch]).with_context(|| {
+        // Fast-forward parent to session tip, then clean up session branch
+        git::git(repo, &["checkout", parent_branch])
+            .with_context(|| format!("failed to checkout {parent_branch}"))?;
+        git::git(repo, &["merge", "--ff-only", session_branch]).with_context(|| {
             format!("failed to auto-merge {session_branch} into {parent_branch}")
         })?;
+        git::git(repo, &["branch", "-d", session_branch])
+            .with_context(|| format!("failed to delete session branch {session_branch}"))?;
 
         emit(
             logger,
@@ -473,7 +469,7 @@ fn finalize_session(
         );
         Ok(true)
     } else {
-        checkout_branch(repo, session_branch)?;
+        // Leave session branch for review — main working tree untouched
         emit(
             logger,
             &Event::SessionComplete {

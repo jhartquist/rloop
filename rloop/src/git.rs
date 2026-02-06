@@ -37,7 +37,7 @@ pub fn current_branch(repo: impl AsRef<Path>) -> anyhow::Result<String> {
 /// Create a new worktree for a task, branched off `base_branch`.
 ///
 /// The worktree lives at `{repo}/.rloop/worktrees/{task_id:02}/` on a new
-/// branch named `rloop/wt/{task_id:02}`.
+/// branch named `rloop-wt-{task_id:02}`.
 ///
 /// # Errors
 /// Returns an error if directory creation fails or git worktree command fails.
@@ -109,24 +109,15 @@ pub fn unlock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Merge a worktree's branch into the target branch.
+/// Move a branch ref forward to point at `to_ref` (fast-forward).
 ///
-/// Checks out `into_branch` in the main repo and merges the worktree branch.
+/// Uses `git branch -f` to update the ref without checkout.
 ///
 /// # Errors
-/// Returns an error if checkout or merge commands fail.
-pub fn merge_worktree(
-    repo: impl AsRef<Path>,
-    worktree: &Worktree,
-    into_branch: &str,
-) -> anyhow::Result<()> {
-    let repo = repo.as_ref();
-    git(repo, &["checkout", into_branch])
-        .with_context(|| format!("failed to checkout {into_branch}"))?;
-
-    git(repo, &["merge", &worktree.branch])
-        .with_context(|| format!("failed to merge {} into {into_branch}", worktree.branch))?;
-
+/// Returns an error if the git branch command fails.
+pub fn fast_forward_ref(repo: impl AsRef<Path>, branch: &str, to_ref: &str) -> anyhow::Result<()> {
+    git(repo.as_ref(), &["branch", "-f", branch, to_ref])
+        .with_context(|| format!("failed to fast-forward {branch} to {to_ref}"))?;
     Ok(())
 }
 
