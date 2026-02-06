@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 
     let prompt = "Read src/lib.rs and describe what the add function does. Is it correct?";
 
-    println!("{}  {}", "PROMPT".blue().bold(), prompt);
+    println!("{}  {}\n", "PROMPT".blue().bold(), prompt);
 
     run_step_with(
         prompt,

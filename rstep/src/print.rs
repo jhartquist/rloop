@@ -72,11 +72,7 @@ impl EventPrinter {
                     .and_then(|v| v.as_str());
 
                 if tur.is_some() || content_text.is_some() {
-                    self.print_tool_result(
-                        tool_info.as_ref(),
-                        tur,
-                        content_text,
-                    );
+                    self.print_tool_result(tool_info.as_ref(), tur, content_text);
                     return;
                 }
 
@@ -99,8 +95,9 @@ impl EventPrinter {
                 );
             }
 
-            Message::StreamEvent(_) | Message::ControlCancelRequest(_) => {}
+            Message::StreamEvent(_) | Message::ControlCancelRequest(_) => return,
         }
+        println!();
     }
 
     fn print_tool_call(&self, name: &str, input: &serde_json::Value) {
@@ -144,10 +141,7 @@ impl EventPrinter {
                 }
             }
             "Bash" => {
-                let cmd = input
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
+                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("?");
                 println!(
                     "{label}  {} {}",
                     "Bash".dimmed(),

@@ -52,6 +52,8 @@ pub fn write_file(dir: &Path, name: &str, content: &str) -> Result<PathBuf> {
 /// Init tracing with INFO default, overridable via RUST_LOG.
 pub fn init_tracing() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 }

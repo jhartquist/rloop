@@ -1,12 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
-use rstep::{
-    helpers,
-    model::Model,
-    print::EventPrinter,
-    step::run_step_with,
-    tool::BuiltinTool,
-};
+use rstep::{helpers, model::Model, print::EventPrinter, step::run_step_with, tool::BuiltinTool};
 use tempfile::tempdir;
 
 #[tokio::main]
@@ -21,7 +15,7 @@ async fn main() -> Result<()> {
          Then write a new file goodbye.txt containing 'Goodbye, Claude'. \
          Finally, cat goodbye.txt to confirm it was written correctly.";
 
-    println!("{}  {}", "PROMPT".blue().bold(), prompt);
+    println!("{}  {}\n", "PROMPT".blue().bold(), prompt);
 
     run_step_with(
         prompt,
