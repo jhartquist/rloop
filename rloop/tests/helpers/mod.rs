@@ -43,6 +43,28 @@ pub fn full_task(
     )
 }
 
+/// Commit all files in a repo (git add . && git commit).
+pub fn commit_all(repo: &Path, message: &str) {
+    use std::process::Command;
+
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["add", "."]);
+    run(&["commit", "-m", message]);
+}
+
 /// Initialize a real git repo in the given directory with an initial commit.
 pub fn init_git_repo(dir: &Path) -> PathBuf {
     use std::process::Command;

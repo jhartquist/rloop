@@ -34,6 +34,28 @@ pub fn current_branch(repo: impl AsRef<Path>) -> anyhow::Result<String> {
     git(repo.as_ref(), &["branch", "--show-current"])
 }
 
+/// Assert the repo has at least one commit.
+///
+/// # Errors
+/// Returns an error if the repo has no commits.
+pub fn assert_has_commits(repo: impl AsRef<Path>) -> anyhow::Result<()> {
+    git(repo.as_ref(), &["rev-parse", "HEAD"])
+        .context("repository has no commits — run `rloop init` or make an initial commit")?;
+    Ok(())
+}
+
+/// Assert the working tree has no uncommitted changes.
+///
+/// # Errors
+/// Returns an error if there are staged or unstaged changes.
+pub fn assert_clean_worktree(repo: impl AsRef<Path>) -> anyhow::Result<()> {
+    let status = git(repo.as_ref(), &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        anyhow::bail!("uncommitted changes in working tree — commit or stash before running rloop");
+    }
+    Ok(())
+}
+
 /// Create a new worktree for a task, branched off `base_branch`.
 ///
 /// The worktree lives at `{repo}/.rloop/worktrees/{task_id:02}/` on a new

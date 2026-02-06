@@ -71,6 +71,7 @@ async fn single_task_no_deps() {
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir).unwrap();
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Do something"));
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
@@ -100,6 +101,7 @@ async fn linear_chain() {
         2,
         &helpers::full_task(2, "Sonnet", &[1], None, false, "Third"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_session_with(&repo, TaskId(2), &default_config(), false, &executor)
@@ -125,6 +127,7 @@ async fn skip_completed_deps() {
         1,
         &helpers::full_task(1, "Sonnet", &[0], None, false, "Run this"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_session_with(&repo, TaskId(1), &default_config(), false, &executor)
@@ -152,6 +155,7 @@ async fn failure_blocks_dependents() {
         2,
         &helpers::full_task(2, "Sonnet", &[1], None, false, "Blocked by 1"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
     let result = run_session_with(&repo, TaskId(2), &default_config(), false, &executor)
@@ -187,6 +191,7 @@ async fn failure_continues_unblocked() {
         3,
         &helpers::full_task(3, "Sonnet", &[1, 2], None, false, "Blocked by 1"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
     let result = run_session_with(&repo, TaskId(3), &default_config(), false, &executor)
@@ -205,6 +210,7 @@ async fn session_branch_naming() {
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir).unwrap();
     helpers::create_task_file(&tasks_dir, 5, &helpers::minimal_task(5, "Target task"));
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_session_with(&repo, TaskId(5), &default_config(), false, &executor)
@@ -222,6 +228,7 @@ async fn auto_merge_on_success() {
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir).unwrap();
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_session_with(&repo, TaskId(0), &default_config(), true, &executor)
@@ -237,6 +244,7 @@ async fn auto_merge_skipped_on_failure() {
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir).unwrap();
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Will fail"));
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[0]);
     let result = run_session_with(&repo, TaskId(0), &default_config(), true, &executor)
@@ -255,6 +263,7 @@ async fn session_logs_events() {
     std::fs::create_dir_all(&tasks_dir).unwrap();
     std::fs::create_dir_all(&sessions_dir).unwrap();
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let _result = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
@@ -285,6 +294,7 @@ async fn run_all_tasks() {
         2,
         &helpers::full_task(2, "Sonnet", &[1], None, false, "Third"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_all_session_with(&repo, &default_config(), false, &executor)
@@ -312,6 +322,7 @@ async fn run_all_skips_completed() {
         1,
         &helpers::full_task(1, "Sonnet", &[0], None, false, "Run this"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_all_session_with(&repo, &default_config(), false, &executor)
@@ -333,10 +344,57 @@ async fn run_all_nothing_to_do() {
         0,
         &helpers::full_task(0, "Sonnet", &[], None, true, "Done"),
     );
+    helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
     let result = run_all_session_with(&repo, &default_config(), false, &executor)
         .await
         .unwrap();
     assert!(result.completed_tasks.is_empty());
+}
+
+#[tokio::test]
+async fn session_fails_on_no_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let tasks_dir = dir.path().join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
+
+    let executor = MockExecutor::all_succeed();
+    let err = run_session_with(dir.path(), TaskId(0), &default_config(), false, &executor)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no commits"),
+        "expected no-commits error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn session_fails_on_dirty_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
+    helpers::commit_all(&repo, "add tasks");
+
+    // Dirty the working tree
+    std::fs::write(repo.join("dirty.txt"), "uncommitted\n").unwrap();
+
+    let executor = MockExecutor::all_succeed();
+    let err = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("uncommitted"),
+        "expected dirty-tree error, got: {msg}"
+    );
 }

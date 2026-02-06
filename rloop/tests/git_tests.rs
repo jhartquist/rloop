@@ -1,7 +1,8 @@
 mod helpers;
 
 use rloop::git::{
-    cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree, unlock_worktree,
+    assert_clean_worktree, assert_has_commits, cleanup_worktree, create_worktree, fast_forward_ref,
+    lock_worktree, unlock_worktree,
 };
 use rloop::task::TaskId;
 
@@ -176,4 +177,37 @@ fn full_lifecycle() {
     // Verify session branch has the commit
     let log = run(&["log", "--oneline", "rloop-03"], &repo);
     assert!(log.contains("add feature"));
+}
+
+#[test]
+fn assert_has_commits_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    assert_has_commits(&repo).unwrap();
+}
+
+#[test]
+fn assert_has_commits_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(assert_has_commits(dir.path()).is_err());
+}
+
+#[test]
+fn assert_clean_worktree_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    assert_clean_worktree(&repo).unwrap();
+}
+
+#[test]
+fn assert_clean_worktree_dirty() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    std::fs::write(repo.join("dirty.txt"), "uncommitted\n").unwrap();
+    assert!(assert_clean_worktree(&repo).is_err());
 }

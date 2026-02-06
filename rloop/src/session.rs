@@ -27,6 +27,7 @@ impl fmt::Display for SessionId {
 ///
 /// A session continues past individual task failures — unblocked tasks in
 /// the DAG still execute. Only tasks transitively blocked by a failure are skipped.
+#[derive(Debug)]
 pub struct SessionResult {
     pub session_id: SessionId,
     pub branch: String,
@@ -228,6 +229,10 @@ pub async fn run_session_with<E: StepExecutor>(
     executor: &E,
 ) -> anyhow::Result<SessionResult> {
     let repo = repo.as_ref();
+
+    git::assert_has_commits(repo)?;
+    git::assert_clean_worktree(repo)?;
+
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = repo.join(".rloop").join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
@@ -338,6 +343,10 @@ pub async fn run_all_session_with<E: StepExecutor>(
     executor: &E,
 ) -> anyhow::Result<SessionResult> {
     let repo = repo.as_ref();
+
+    git::assert_has_commits(repo)?;
+    git::assert_clean_worktree(repo)?;
+
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = repo.join(".rloop").join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
