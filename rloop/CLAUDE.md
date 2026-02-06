@@ -1,64 +1,75 @@
-# rstep
+# rloop
 
-Single-step task executor. Run one step, get a result.
+DAG-based task executor. Run tasks in isolated worktrees, verify results, merge work.
 
-## Build Method
+## Coding Style
 
-Chronological examples in `examples/`. Each builds on the last.
+### Rust Conventions
+
+- **Pedantic clippy.** `#![warn(clippy::pedantic)]` in lib.rs. Fix all warnings.
+- **Functional style.** Prefer returning values over mutation. Use `Result` chains, iterators, combinators. Minimize `&mut self` — prefer transformations that return new values.
+- **Deep modules, simple interfaces.** Each module exposes 1-3 public functions/types. Hide complexity behind clean APIs. Callers shouldn't need to know internals.
+- **Descriptive names.** Functions and variables should read like prose. No abbreviations unless universally understood (`id`, `dir`, `config`). No hungarian notation.
+- **Terse comments.** Comment *why*, not *what*. No comments that restate the code. A well-named function needs no comment. Add comments for non-obvious decisions, tradeoffs, or workarounds.
+- **No dead code.** Don't leave commented-out code, unused imports, or `#[allow(dead_code)]`. If it's not used, delete it.
+- **Error handling.** Use `anyhow` for application errors. Use `thiserror` for library error types that callers match on. No `.unwrap()` outside tests.
+
+### Dependencies
+
+**Add dependencies one at a time, only when first used.**
+
+```
+deps: add tokio for async runtime
+deps: add serde for task file parsing
+```
+
+Don't batch dependencies. Don't add them "in preparation" for later use.
 
 ### Commits
 
-One logical change per commit.
-
-**Dependencies come with the code that uses them.** Don't add deps before the code that needs them.
+One logical change per commit. Small commits are better than big ones.
 
 ```
-ex-00: minimal query with verbose output
-  (adds tokio, anyhow, serde_json, futures, tempfile)
-
-ex-05: verification
-  (adds process handling deps when needed)
+feat: add task file parsing
+feat: add DAG resolution with topological sort
+fix: handle circular dependency detection
+refactor: extract worktree lifecycle to git module
+test: add DAG resolution edge cases
+deps: add serde for task file parsing
 ```
 
-**Commit types:**
+## Module Layout
+
 ```
-ex-XX: description (N lines)
-fix: what was fixed
-refactor: extract to lib
-test: what's tested
+rloop/src/
+├── lib.rs          # Public API, clippy config
+├── task.rs         # Task parsing, DAG resolution
+├── step.rs         # Single step execution (agent + verify + retry)
+├── git.rs          # Worktree lifecycle, branching, merging
+├── session.rs      # Session orchestration
+├── log.rs          # Event logging (JSONL + terminal output)
+├── tools.rs        # MCP tool definitions (complete)
+├── config.rs       # Config loading from .rloop/config.toml
+└── main.rs         # CLI entry point
 ```
 
-### Fixing Earlier Examples
+## Testing
+
+- **Unit tests** in each module (`#[cfg(test)] mod tests`).
+- **Integration tests** in `tests/` for cross-module flows.
+- **Examples** in `examples/` for smoke tests and demos.
+- Tests use real file I/O with `tempfile` crate. No mocks unless unavoidable.
 
 ```bash
-git rebase -i <commit>^
-# Mark "edit", fix, amend, continue
-git push --force-with-lease
-```
-
-## Principles
-
-- **Bare minimum**: Empty temp dir, no ambient context, explicit tool allowlist
-- **Track tokens**: Accumulate from every stream message
-- **Sandbox**: Claude can only access working directory
-- **Structured output**: Final message is JSON StepResult
-
-## Structure
-
-```
-rstep/
-├── src/lib.rs        # Grows as we extract from examples
-├── examples/         # 00-, 01-, 02-, ...
-├── templates/
-│   ├── bug-adder/    # Fix a-b → a+b
-│   └── empty/
-├── fixtures/recorded/
-└── tests/
+cargo clippy -- -W clippy::pedantic    # lint
+cargo test                              # all tests
+cargo run --example 01-parse-task       # smoke test
 ```
 
 ## Run
 
 ```bash
-cargo run --example 00-minimal-query
+cargo clippy -- -W clippy::pedantic
 cargo test
+cargo run --example 01-parse-task
 ```

@@ -290,6 +290,14 @@ Per-task frontmatter specifies verification commands (if any) and can override m
 
 rloop auto-initializes `.rloop/` if it doesn't exist (creates directories, default config, adds gitignore entries).
 
+### Task Creation
+
+Tasks are created manually or with the help of a Claude Code skill:
+
+**`.claude/skills/create-rloop-tasks/SKILL.md`** — a project-level skill that knows the task file format and can generate tasks from a description of work. Invoked from any Claude session with `/create-rloop-tasks`.
+
+`rloop init` scaffolds an example task in `.rloop/tasks/` and installs the skill, so the format is documented from the start.
+
 ## Cancellation
 
 **Ctrl+C** during execution:
