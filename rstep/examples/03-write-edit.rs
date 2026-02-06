@@ -1,4 +1,5 @@
 use anyhow::Result;
+use colored::Colorize;
 use rstep::{
     helpers,
     model::Model,
@@ -16,10 +17,14 @@ async fn main() -> Result<()> {
 
     let mut printer = EventPrinter::new(temp_dir.path());
 
-    run_step_with(
-        "Read hello.txt, then edit it to say 'Hello, World' instead. \
+    let prompt = "Read hello.txt, then edit it to say 'Hello, World' instead. \
          Then write a new file goodbye.txt containing 'Goodbye, Claude'. \
-         Finally, cat goodbye.txt to confirm it was written correctly.",
+         Finally, cat goodbye.txt to confirm it was written correctly.";
+
+    println!("{}  {}", "PROMPT".blue().bold(), prompt);
+
+    run_step_with(
+        prompt,
         Model::Haiku,
         temp_dir.path(),
         &[
