@@ -27,7 +27,7 @@ Don't batch dependencies. Don't add them "in preparation" for later use.
 
 ### Commits
 
-One logical change per commit. Small commits are better than big ones.
+One logical change per commit. Small commits are better than big ones. Run `cargo fmt` before every commit. Commit regularly — after each logical change, not in large batches.
 
 ```
 feat: add task file parsing
