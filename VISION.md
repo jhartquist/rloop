@@ -13,8 +13,8 @@ Secondary goal: educate. Break everything into small chunks so anyone can learn 
 If we perfect the step function, the loop is trivial:
 
 ```
-while tasks_remain() {
-    step()
+for task in dag.topological_order() {
+    step(task)
 }
 ```
 
@@ -29,18 +29,18 @@ step(state, task) → (state', result)
 ```
 
 **Inputs:**
-- `state` - codebase, task queue, context
+- `state` - codebase, task files, context
 - `task` - what to accomplish
 
 **Outputs:**
 - `state'` - modified codebase, updated task status
-- `result` - Success | Failed | Blocked
+- `result` - Success | Failed
 
 **What happens inside:**
 1. Set up isolated environment (worktree)
 2. Agent works (Claude with controlled tools)
 3. Verify (tests, build)
-4. Transition (commit, maybe merge)
+4. Transition (commit, merge into session branch)
 5. Return result
 
 ## MDP Formulation
@@ -53,7 +53,7 @@ MDP = (S, A, T, R, π)
 S = State space (codebase × task_state × context)
 A = Action space (a step execution)
 T = Transition function: S × A → S'
-R = Reward function: S × A → {Success, Failed, Blocked}
+R = Reward function: S × A → {Success, Failed}
 π = Policy: task → step_config
 ```
 
@@ -61,9 +61,8 @@ R = Reward function: S × A → {Success, Failed, Blocked}
 
 Everything observable before a step:
 - Codebase (files, git history)
-- Task state (from `br` - ready, blocked, done)
-- Human queue state (from `hq` - pending questions, assumptions)
-- Previous attempts (session logs)
+- Task state (completed or not, from task files)
+- Previous attempts (failure learnings accumulated in memory, session logs on disk)
 
 ### Action (A)
 
@@ -72,16 +71,14 @@ A step execution. Within the step, the agent takes many micro-actions (edits, to
 ### Transition (T)
 
 Deterministic given the step outcome:
-- Success → task closed, code merged, state updated
-- Failed → task remains, logs captured, retry possible
-- Blocked → task blocked on human input
+- Success → task marked completed, code merged into session branch, state updated
+- Failed → task remains incomplete, learnings captured, retry possible
 
 ### Reward (R)
 
 Sparse signal at end of step:
-- `Success` - tests pass, task complete
-- `Failed` - verification failed, agent gave up
-- `Blocked` - needs human input (question, assumption review)
+- `Success` - verification passes (or `complete` called with no verification configured), task done
+- `Failed` - verification failed after max retries, or agent gave up
 
 ### Policy (π)
 
@@ -91,13 +88,14 @@ How we configure each step:
 struct StepConfig {
     model: Model,              // haiku, sonnet, opus
     system_prompt: String,     // task framing
-    tools: Vec<Tool>,          // allowed tools (explicit allowlist)
+    tools: Vec<Tool>,          // allowed tools
     max_turns: u32,            // budget
-    verification: Vec<String>, // commands to run
+    max_retries: u32,          // verification retry limit
+    verification: Option<Vec<String>>, // commands to run (per-task)
 }
 ```
 
-The policy maps tasks to configs. Initially hardcoded, later learned.
+The policy maps tasks to configs. Initially from task frontmatter + project config, later learned.
 
 ## The Learning Loop
 
@@ -109,9 +107,10 @@ Every step produces a trajectory:
 
 We log everything:
 - Full session events (Claude messages, tool calls, results)
+- rloop lifecycle events (worktree create, merge, cleanup)
 - Config used (model, prompt, tools)
-- Metrics (tokens, duration, tool call counts)
-- Outcome (Success/Failed/Blocked)
+- Metrics (tokens, duration, tool call counts, context percentage)
+- Outcome (Success/Failed)
 
 From trajectories, we improve the system:
 
@@ -121,7 +120,7 @@ From trajectories, we improve the system:
 │                                                                 │
 │   Session Logs  +  Rewards  →  Analysis  →  Better Policy      │
 │                                                                 │
-│   Tune: prompts, model selection, tool sets, process           │
+│   Tune: prompts, model selection, tool sets, task specs        │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -134,7 +133,7 @@ From trajectories, we improve the system:
 
 **This is the key:** Every step is a data point for making the next step better.
 
-## Human-on-Loop
+## Human-on-Loop (Future)
 
 Humans don't block the loop. Agents work continuously.
 
@@ -148,29 +147,33 @@ Humans review asynchronously:
 - Zero wait latency between items
 - Answers unblock tasks for future steps
 
+*Not in v1 — human interaction is reviewing session branches and improving task specs between runs.*
+
 ## Design Principles
 
 ### 1. The Step is Atomic
 
 One step = one task attempt. Complete isolation:
 - Fresh worktree
-- Fresh context (no accumulated state)
+- Fresh context (no accumulated state across tasks)
 - Clean verification
 - Clear outcome
 
-### 2. 100% Control
+### 2. Controlled Environment
 
 We control everything going into the step:
-- Empty starting directory (no ambient CLAUDE.md or skills)
-- Explicit tool allowlist (disable all by default)
+- Isolated worktree (agent can't escape working directory)
+- Project-level settings loaded (CLAUDE.md, skills, agents)
+- No global/user-level ambient context
 - Measured context (token tracking from first message)
-- Sandboxed filesystem (can't escape working directory)
+- Agent has self-awareness of context usage
 
 ### 3. Observable Everything
 
 Full visibility into the step:
 - Every Claude message logged
 - Every tool call and result logged
+- Every rloop lifecycle event logged
 - Token counts accumulated per message
 - Context percentage tracked in real-time
 
@@ -179,20 +182,23 @@ Full visibility into the step:
 We don't just run steps, we learn from them:
 - Successful patterns → reinforce
 - Failure modes → analyze and fix
-- Prompt tuning based on outcomes
+- Task spec tuning based on outcomes
 - Model selection based on task type success rates
 
 ## Success Criteria
 
 1. **Step is solid** - Consistent, reproducible, observable
-2. **Rewards are clear** - Success/Failed/Blocked, no ambiguity
+2. **Rewards are clear** - Success/Failed, no ambiguity
 3. **Learning is possible** - Full trajectories logged for analysis
-4. **Humans aren't bottlenecks** - Async queue, batch review
-5. **System improves** - Measurable gains from trajectory analysis
+4. **Tasks are replayable** - Same specs can be run multiple times to compare results
+5. **System improves** - Better task specs and configs from trajectory analysis
 
-## Beyond the Code
+## Beyond v1
 
-Once rstep is solid:
-- Build rloop (parallel orchestration, merge queue, human queue)
+Once the core loop is solid:
+- Parallel DAG execution (concurrent independent tasks)
+- Human queue (ask_question, log_assumption, propose_task)
+- Task creation by agents (discovered work becomes new tasks)
+- Daemon mode (long-running, concurrent sessions)
 - Community: weekly features, streams, blog posts
 - Enable others to fork and build their own loops

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message, ResultMessage};
 use futures::StreamExt;
+use serde_json::json;
 use strum::IntoEnumIterator;
 
 use crate::{model::Model, tool::BuiltinTool};
@@ -22,6 +23,19 @@ pub async fn query(
         .setting_sources(vec![])
         .allowed_tools(vec![])
         .disallowed_tools(builtin_tools)
+        .output_format(json!({
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "number",
+                        "description": "Result of the calculation"
+                    },
+                },
+                "required": ["result"]
+            }
+        }))
         .build();
 
     let mut client = ClaudeClient::new(options);
@@ -38,7 +52,10 @@ pub async fn query(
                 Message::Assistant(_msg) => println!("[ASST]"),
                 Message::User(_msg) => println!("[USER]"),
                 Message::System(_msg) => println!("[SYSTEM]"),
-                Message::Result(_msg) => println!("[RESULT]"),
+                // Message::Result(_msg) => println!("[RESULT]"),
+                Message::Result(msg) => {
+                    dbg!(msg);
+                }
                 _ => unimplemented!(),
             };
             messages.push(message);
