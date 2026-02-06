@@ -1,5 +1,8 @@
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use colored::Colorize;
 use serde::Serialize;
 
 use crate::session::SessionId;
@@ -70,23 +73,110 @@ pub enum Event {
 
 /// Logs session events to JSONL files and prints to terminal.
 pub struct SessionLogger {
+    writer: BufWriter<File>,
     _session_id: SessionId,
 }
 
 impl SessionLogger {
     /// Create a new logger for a session.
-    pub fn new(_session_dir: &Path, _session_id: SessionId) -> anyhow::Result<Self> {
-        todo!()
+    ///
+    /// Opens (or creates) `{session_dir}/{session_id}.jsonl` for appending.
+    pub fn new(session_dir: &Path, session_id: SessionId) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(session_dir)?;
+        let path = session_dir.join(format!("{session_id}.jsonl"));
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            _session_id: session_id,
+        })
     }
 
     /// Write an event to the JSONL log file.
-    pub fn log(&mut self, _event: &Event) -> anyhow::Result<()> {
-        todo!()
+    pub fn log(&mut self, event: &Event) -> anyhow::Result<()> {
+        let line = serde_json::to_string(event)?;
+        writeln!(self.writer, "{line}")?;
+        self.writer.flush()?;
+        Ok(())
     }
 
     /// Pretty-print an event to the terminal.
-    pub fn print(&self, _event: &Event) {
-        todo!()
+    #[allow(clippy::unused_self)]
+    pub fn print(&self, event: &Event) {
+        match event {
+            Event::SessionStarted { session_id, target } => {
+                eprintln!(
+                    "{} session {} targeting task {}",
+                    "▶".green(),
+                    session_id,
+                    target
+                );
+            }
+            Event::TaskStarted { task_id } => {
+                eprintln!("{} task {task_id}", "→".blue());
+            }
+            Event::TaskCompleted { task_id, summary } => {
+                eprintln!("{} task {task_id} — {summary}", "✓".green());
+            }
+            Event::TaskFailed { task_id, reason } => {
+                eprintln!("{} task {task_id} — {reason}", "✗".red());
+            }
+            Event::VerificationRan {
+                task_id,
+                command,
+                passed,
+                output,
+            } => {
+                let icon = if *passed {
+                    "✓".green()
+                } else {
+                    "✗".red()
+                };
+                let status = if *passed { "passed" } else { "failed" };
+                eprintln!("{icon} verify task {task_id} `{command}`: {status}");
+                if !passed {
+                    eprintln!("  {output}");
+                }
+            }
+            Event::WorktreeCreated { task_id, path } => {
+                eprintln!("  worktree {task_id} → {}", path.display());
+            }
+            Event::WorktreeMerged {
+                task_id,
+                into_branch,
+            } => {
+                eprintln!("  merged {task_id} → {into_branch}");
+            }
+            Event::WorktreeCleanedUp { task_id } => {
+                eprintln!("  cleaned up {task_id}");
+            }
+            Event::SessionComplete { branch } => {
+                eprintln!("{} session complete → branch {branch}", "■".green());
+            }
+            Event::SessionAutoMerged {
+                branch,
+                into_branch,
+            } => {
+                eprintln!("{} auto-merged {branch} → {into_branch}", "■".green());
+            }
+            Event::SessionCancelled => {
+                eprintln!("{} session cancelled", "■".yellow());
+            }
+            Event::AssistantMessage { content } => {
+                eprintln!("{content}");
+            }
+            Event::PromptSent { task_id } => {
+                eprintln!("  prompt → task {task_id}");
+            }
+            Event::ToolCall { name, .. } => {
+                eprintln!("  tool: {name}");
+            }
+            Event::ToolResult { name, .. } => {
+                eprintln!("  result: {name}");
+            }
+        }
     }
 }
 
