@@ -1,4 +1,4 @@
-use rstep::query;
+use rstep::{model::Model, query};
 use tempfile::tempdir;
 
 #[tokio::main]
@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
     let prompt = "What is 3 + 42?";
     println!("Prompt: {prompt}");
 
-    let response = query(prompt, "haiku", project_dir.path()).await?;
+    let response = query(prompt, Model::Haiku, project_dir.path()).await?;
     println!("Response: {response}");
 
     Ok(())
