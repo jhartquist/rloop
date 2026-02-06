@@ -1,76 +1,12 @@
+#![warn(clippy::pedantic)]
+#![allow(clippy::missing_errors_doc)] // Phase 1 skeleton — will add error docs during implementation
+
+pub mod config;
+pub mod git;
+pub mod log;
 pub mod model;
+pub mod session;
+pub mod step;
+pub mod task;
 pub mod tool;
-
-use std::path::Path;
-
-use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message, ResultMessage};
-use futures::StreamExt;
-use serde_json::json;
-use strum::IntoEnumIterator;
-
-use crate::{model::Model, tool::BuiltinTool};
-
-pub async fn query(
-    prompt: &str,
-    model: Model,
-    project_dir: impl AsRef<Path>,
-) -> anyhow::Result<String> {
-    let builtin_tools: Vec<String> = BuiltinTool::iter().map(|tool| tool.to_string()).collect();
-
-    let options = ClaudeAgentOptions::builder()
-        .model(model.to_string())
-        .cwd(project_dir.as_ref())
-        .setting_sources(vec![])
-        .allowed_tools(vec![])
-        .disallowed_tools(builtin_tools)
-        .output_format(json!({
-            "type": "json_schema",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "result": {
-                        "type": "number",
-                        "description": "Result of the calculation"
-                    },
-                },
-                "required": ["result"]
-            }
-        }))
-        .build();
-
-    let mut client = ClaudeClient::new(options);
-
-    client.connect().await?;
-    client.query(prompt).await?;
-
-    let mut messages = vec![];
-    {
-        let mut stream = client.receive_response();
-        while let Some(result) = stream.next().await {
-            let message = result?;
-            match &message {
-                Message::Assistant(_msg) => println!("[ASST]"),
-                Message::User(_msg) => println!("[USER]"),
-                Message::System(_msg) => println!("[SYSTEM]"),
-                // Message::Result(_msg) => println!("[RESULT]"),
-                Message::Result(msg) => {
-                    dbg!(msg);
-                }
-                _ => unimplemented!(),
-            };
-            messages.push(message);
-        }
-    }
-
-    client.disconnect().await?;
-
-    let Some(Message::Result(ResultMessage {
-        result: Some(response),
-        ..
-    })) = messages.last()
-    else {
-        anyhow::bail!("expected last message to be a result message");
-    };
-
-    Ok(response.to_owned())
-}
+pub mod tools;
