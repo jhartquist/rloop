@@ -1,5 +1,8 @@
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+
+use serde::Deserialize;
 
 use crate::model::Model;
 
@@ -9,15 +12,75 @@ pub struct Config {
     pub max_retries: u32,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            model: Model::Sonnet,
+            max_turns: 50,
+            max_retries: 10,
+        }
+    }
+}
+
+/// Intermediate representation for partial TOML parsing.
+#[derive(Deserialize)]
+struct ConfigFile {
+    #[serde(default)]
+    step: Option<StepSection>,
+}
+
+#[derive(Deserialize)]
+struct StepSection {
+    model: Option<Model>,
+    max_turns: Option<u32>,
+    max_retries: Option<u32>,
+}
+
+const DEFAULT_CONFIG_TOML: &str = "\
+[step]
+model = \"Sonnet\"
+max_turns = 50
+max_retries = 10
+";
+
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
-pub fn load_config(_rloop_dir: &Path) -> anyhow::Result<Config> {
-    todo!()
+pub fn load_config(rloop_dir: &Path) -> anyhow::Result<Config> {
+    let config_path = rloop_dir.join("config.toml");
+
+    if !config_path.exists() {
+        return Ok(Config::default());
+    }
+
+    let contents = fs::read_to_string(&config_path)?;
+    let file: ConfigFile = toml::from_str(&contents)?;
+    let defaults = Config::default();
+
+    let Some(step) = file.step else {
+        return Ok(defaults);
+    };
+
+    Ok(Config {
+        model: step.model.unwrap_or(defaults.model),
+        max_turns: step.max_turns.unwrap_or(defaults.max_turns),
+        max_retries: step.max_retries.unwrap_or(defaults.max_retries),
+    })
 }
 
 /// Initialize `.rloop/` directory structure in a repo.
 /// Creates directories, default config, adds gitignore entries.
-pub fn init_rloop_dir(_repo: &Path) -> anyhow::Result<PathBuf> {
-    todo!()
+pub fn init_rloop_dir(repo: &Path) -> anyhow::Result<PathBuf> {
+    let rloop_dir = repo.join(".rloop");
+
+    for subdir in &["tasks", "worktrees", "sessions"] {
+        fs::create_dir_all(rloop_dir.join(subdir))?;
+    }
+
+    let config_path = rloop_dir.join("config.toml");
+    if !config_path.exists() {
+        fs::write(&config_path, DEFAULT_CONFIG_TOML)?;
+    }
+
+    Ok(rloop_dir)
 }
 
 #[cfg(test)]
