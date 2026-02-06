@@ -18,10 +18,16 @@ async fn main() -> Result<()> {
 
     run_step_with(
         "Read hello.txt, then edit it to say 'Hello, World' instead. \
-         Then write a new file goodbye.txt containing 'Goodbye, Claude'.",
+         Then write a new file goodbye.txt containing 'Goodbye, Claude'. \
+         Finally, cat goodbye.txt to confirm it was written correctly.",
         Model::Haiku,
         temp_dir.path(),
-        &[BuiltinTool::Read, BuiltinTool::Write, BuiltinTool::Edit],
+        &[
+            BuiltinTool::Read,
+            BuiltinTool::Write,
+            BuiltinTool::Edit,
+            BuiltinTool::Bash,
+        ],
         |msg| printer.print(msg),
     )
     .await?;
