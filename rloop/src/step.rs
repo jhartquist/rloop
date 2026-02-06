@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -11,6 +11,7 @@ use claude_agent_sdk_rs::types::mcp::{McpServerConfig, McpServers};
 use claude_agent_sdk_rs::types::messages::ContentBlock;
 use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message};
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::config::Config;
@@ -21,20 +22,39 @@ use crate::tool::BuiltinTool;
 use crate::tools::create_tools;
 
 /// Outcome of a single step (one execution attempt of a task).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StepOutcome {
     Success { summary: String },
     Failed { reason: String, learnings: String },
 }
 
 /// Result of a single step execution.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StepResult {
     pub task_id: TaskId,
     pub outcome: StepOutcome,
     pub model: Model,
     pub cost_usd: f64,
+    #[serde(with = "duration_serde")]
     pub duration: Duration,
     /// Claude Code session ID — for tracing back to CC logs or future session resume.
     pub cc_session_id: Option<String>,
+}
+
+/// Serialize `Duration` as seconds (f64) for JSON compatibility.
+mod duration_serde {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(duration.as_secs_f64())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        let secs = f64::deserialize(deserializer)?;
+        Ok(Duration::from_secs_f64(secs))
+    }
 }
 
 /// Abstraction over step execution — enables mock executors in tests.
@@ -107,7 +127,10 @@ fn compute_tool_lists() -> (Vec<String>, Vec<String>) {
     allowed.push("mcp__rloop__complete".to_string());
     allowed.push("mcp__rloop__context_usage".to_string());
 
-    let disallowed: Vec<String> = disallowed_builtins.iter().map(ToString::to_string).collect();
+    let disallowed: Vec<String> = disallowed_builtins
+        .iter()
+        .map(ToString::to_string)
+        .collect();
 
     (allowed, disallowed)
 }
@@ -137,10 +160,7 @@ fn failure_output_schema() -> serde_json::Value {
 
 /// Extract the outcome from the shared summary (set by the `complete` tool)
 /// or from structured output on the `ResultMessage`.
-fn determine_outcome(
-    summary: &Mutex<Option<String>>,
-    result_msg: Option<&Message>,
-) -> StepOutcome {
+fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Message>) -> StepOutcome {
     // Check if the `complete` tool was called and verification passed.
     if let Some(text) = summary.lock().expect("summary lock poisoned").as_ref() {
         return StepOutcome::Success {
@@ -335,7 +355,9 @@ mod tests {
     fn step_result_fields() {
         let result = StepResult {
             task_id: TaskId(5),
-            outcome: StepOutcome::Success { summary: "ok".into() },
+            outcome: StepOutcome::Success {
+                summary: "ok".into(),
+            },
             model: Model::Sonnet,
             cost_usd: 0.05,
             duration: Duration::from_secs(30),
@@ -356,6 +378,9 @@ mod tests {
             duration: Duration::from_secs(60),
             cc_session_id: Some("session-abc".into()),
         };
-        assert_eq!(result_with_session.cc_session_id.as_deref(), Some("session-abc"));
+        assert_eq!(
+            result_with_session.cc_session_id.as_deref(),
+            Some("session-abc")
+        );
     }
 }
