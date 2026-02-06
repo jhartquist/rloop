@@ -1,32 +1,16 @@
-//! Run a full session with DAG resolution.
+//! Run a full session with DAG resolution against the two-bugs template.
 //!
 //! Requires ANTHROPIC_API_KEY environment variable.
 //!
 //! Usage: cargo run --example 04-session
 
 use std::fs;
-use std::process::Command;
 
 use rloop::config::Config;
 use rloop::model::Model;
 use rloop::session::run_session;
 use rloop::task::TaskId;
-
-fn init_repo(dir: &std::path::Path) {
-    let run = |args: &[&str]| {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git failed");
-    };
-    run(&["init"]);
-    run(&["config", "user.email", "test@test.com"]);
-    run(&["config", "user.name", "Test"]);
-    fs::write(dir.join("README.md"), "# test\n").unwrap();
-    run(&["add", "."]);
-    run(&["commit", "-m", "init"]);
-}
+use rloop::template::{Template, copy_template};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,21 +19,20 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let dir = tempfile::tempdir()?;
+    let dir = copy_template(&Template::TwoBugs)?;
     let repo = dir.path().to_path_buf();
 
-    init_repo(&repo);
+    // Two-task DAG: 00 fixes add, 01 fixes multiply (depends on 00)
     let tasks_dir = repo.join(".rloop").join("tasks");
     fs::create_dir_all(&tasks_dir)?;
 
-    // Two-task DAG: 00 -> 01
     fs::write(
         tasks_dir.join("00.md"),
-        "---\nid: 0\nmodel: Haiku\n---\nCreate `src/lib.rs` with a function `pub fn greet() -> &'static str { \"hello\" }`.\n",
+        "---\nid: 0\nmodel: Haiku\nverification: \"cargo test test_add\"\n---\nFix the `add` function in `src/lib.rs`. It returns the wrong result.\n",
     )?;
     fs::write(
         tasks_dir.join("01.md"),
-        "---\nid: 1\nmodel: Haiku\ndepends_on: [0]\n---\nAdd a test in `src/lib.rs` that asserts `greet()` returns \"hello\".\n",
+        "---\nid: 1\nmodel: Haiku\ndepends_on: [0]\nverification: \"cargo test test_multiply\"\n---\nFix the `multiply` function in `src/lib.rs`. It returns the wrong result.\n",
     )?;
 
     let config = Config {

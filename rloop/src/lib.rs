@@ -7,5 +7,6 @@ pub mod model;
 pub mod session;
 pub mod step;
 pub mod task;
+pub mod template;
 pub mod tool;
 pub mod tools;
