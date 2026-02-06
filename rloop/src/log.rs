@@ -2,45 +2,48 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::session::SessionId;
+use crate::task::TaskId;
+
 /// All events that can occur during a session.
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
     // rloop lifecycle
     SessionStarted {
-        session_id: String,
-        target: String,
+        session_id: SessionId,
+        target: TaskId,
     },
     TaskStarted {
-        task_id: String,
+        task_id: TaskId,
     },
     WorktreeCreated {
-        task_id: String,
+        task_id: TaskId,
         path: PathBuf,
     },
     PromptSent {
-        task_id: String,
+        task_id: TaskId,
     },
     VerificationRan {
-        task_id: String,
+        task_id: TaskId,
         command: String,
         passed: bool,
         output: String,
     },
     TaskCompleted {
-        task_id: String,
+        task_id: TaskId,
         summary: String,
     },
     TaskFailed {
-        task_id: String,
+        task_id: TaskId,
         reason: String,
     },
     WorktreeMerged {
-        task_id: String,
+        task_id: TaskId,
         into_branch: String,
     },
     WorktreeCleanedUp {
-        task_id: String,
+        task_id: TaskId,
     },
     SessionComplete {
         branch: String,
@@ -63,26 +66,16 @@ pub enum Event {
         name: String,
         output: serde_json::Value,
     },
-    TokenUsage {
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read: u64,
-        cache_creation: u64,
-    },
-    ContextUsage {
-        percentage: f32,
-    },
 }
 
 /// Logs session events to JSONL files and prints to terminal.
 pub struct SessionLogger {
-    _session_dir: PathBuf,
-    _session_id: String,
+    _session_id: SessionId,
 }
 
 impl SessionLogger {
     /// Create a new logger for a session.
-    pub fn new(_session_dir: &Path, _session_id: &str) -> anyhow::Result<Self> {
+    pub fn new(_session_dir: &Path, _session_id: SessionId) -> anyhow::Result<Self> {
         todo!()
     }
 

@@ -1,16 +1,18 @@
 use std::path::{Path, PathBuf};
 
+use crate::task::TaskId;
+
 /// An active git worktree for task execution.
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
-    pub task_id: String,
+    pub task_id: TaskId,
 }
 
 /// Create a new worktree for a task, branched off `base_branch`.
 pub fn create_worktree(
     _repo: &Path,
-    _task_id: &str,
+    _task_id: TaskId,
     _base_branch: &str,
 ) -> anyhow::Result<Worktree> {
     todo!()

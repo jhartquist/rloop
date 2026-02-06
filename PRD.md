@@ -71,16 +71,17 @@ rloop run 05
 2. **Load task** — read `.rloop/tasks/05.md`, parse frontmatter
 3. **Resolve DAG** — find all transitive dependencies, topological sort
 4. **Create session branch** — branch off current HEAD (main, feature branch, whatever)
-5. **For each dependency (in order):**
+5. **For each task in DAG order:**
    a. Skip if already `completed: true`
-   b. Create worktree off session branch
-   c. Execute step (agent works, verification, retry up to N times)
-   d. On success: merge worktree into session branch, mark completed, cleanup worktree
-   e. On failure: log failure, cleanup worktree, abort session
-6. **Run target task** — same as 5b-5d
-7. **Result:**
-   - Session branch has all changes + updated task files
-   - `--auto-merge`: merge session branch back to parent
+   b. Skip if blocked by a failed task (mark as skipped)
+   c. Create worktree off session branch
+   d. Execute step (agent works, verification, retry up to N times)
+   e. On success: merge worktree into session branch, mark completed, cleanup worktree
+   f. On failure: log failure, cleanup worktree, continue to next unblocked task
+6. **Result:**
+   - Session branch has all successful changes + updated task files
+   - Failed tasks and their transitive dependents are recorded but don't abort the session
+   - `--auto-merge`: merge session branch back to parent (only if all tasks succeeded)
    - Default: leave session branch for human review
 
 ### Running All Tasks

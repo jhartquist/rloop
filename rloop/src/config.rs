@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::model::Model;
 
@@ -6,7 +7,6 @@ pub struct Config {
     pub model: Model,
     pub max_turns: u32,
     pub max_retries: u32,
-    pub session_dir: PathBuf,
 }
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.

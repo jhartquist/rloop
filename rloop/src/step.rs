@@ -2,7 +2,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::task::Task;
+use crate::model::Model;
+use crate::task::{Task, TaskId};
 
 /// Outcome of a single step (one execution attempt of a task).
 pub enum StepOutcome {
@@ -10,12 +11,15 @@ pub enum StepOutcome {
     Failed { reason: String, learnings: String },
 }
 
-/// Result of executing a task (may include multiple retry attempts).
+/// Result of a single step execution.
 pub struct StepResult {
-    pub task_id: String,
+    pub task_id: TaskId,
     pub outcome: StepOutcome,
-    pub attempts: u32,
+    pub model: Model,
+    pub cost_usd: f64,
     pub duration: Duration,
+    /// Claude Code session ID — for tracing back to CC logs or future session resume.
+    pub cc_session_id: Option<String>,
 }
 
 /// Execute a task in a worktree: run the agent, verify, retry on failure.
