@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::model::Model;
 
@@ -15,14 +15,31 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: Model::Sonnet,
+            model: Model::Opus,
             max_turns: 50,
             max_retries: 10,
         }
     }
 }
 
-/// Intermediate representation for partial TOML parsing.
+impl Config {
+    /// Serialize this config to TOML format.
+    ///
+    /// # Errors
+    /// Returns an error if TOML serialization fails.
+    pub fn to_toml(&self) -> anyhow::Result<String> {
+        let file = ConfigFileOut {
+            step: StepSectionOut {
+                model: self.model,
+                max_turns: self.max_turns,
+                max_retries: self.max_retries,
+            },
+        };
+        Ok(toml::to_string_pretty(&file)?)
+    }
+}
+
+/// Intermediate representation for partial TOML parsing (input).
 #[derive(Deserialize)]
 struct ConfigFile {
     #[serde(default)]
@@ -36,12 +53,18 @@ struct StepSection {
     max_retries: Option<u32>,
 }
 
-const DEFAULT_CONFIG_TOML: &str = "\
-[step]
-model = \"Opus\"
-max_turns = 50
-max_retries = 10
-";
+/// Intermediate representation for TOML output.
+#[derive(Serialize)]
+struct ConfigFileOut {
+    step: StepSectionOut,
+}
+
+#[derive(Serialize)]
+struct StepSectionOut {
+    model: Model,
+    max_turns: u32,
+    max_retries: u32,
+}
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
 ///
@@ -85,7 +108,7 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
 
     let config_path = rloop_dir.join("config.toml");
     if !config_path.exists() {
-        fs::write(&config_path, DEFAULT_CONFIG_TOML)?;
+        fs::write(&config_path, Config::default().to_toml()?)?;
     }
 
     Ok(rloop_dir)
@@ -100,7 +123,7 @@ mod tests {
     fn load_defaults_when_no_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Sonnet));
+        assert!(matches!(config.model, Model::Opus));
         assert_eq!(config.max_turns, 50);
         assert_eq!(config.max_retries, 10);
     }
@@ -165,5 +188,17 @@ mod tests {
         let second = init_rloop_dir(dir.path()).unwrap();
         assert_eq!(first, second);
         assert!(second.join("config.toml").exists());
+    }
+
+    #[test]
+    fn to_toml_roundtrip() {
+        let config = Config::default();
+        let toml_str = config.to_toml().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), &toml_str).unwrap();
+        let loaded = load_config(dir.path()).unwrap();
+        assert!(matches!(loaded.model, Model::Opus));
+        assert_eq!(loaded.max_turns, 50);
+        assert_eq!(loaded.max_retries, 10);
     }
 }

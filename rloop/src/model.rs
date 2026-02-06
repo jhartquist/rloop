@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use strum::Display;
 
-#[derive(Copy, Clone, Debug, Display, Deserialize)]
+#[derive(Copy, Clone, Debug, Display, Serialize, Deserialize)]
 pub enum Model {
     Haiku,
     Sonnet,
