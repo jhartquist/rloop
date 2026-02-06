@@ -84,7 +84,8 @@ impl SessionLogger {
     ///
     /// # Errors
     /// Returns an error if directory creation or file opening fails.
-    pub fn new(session_dir: &Path, session_id: SessionId) -> anyhow::Result<Self> {
+    pub fn new(session_dir: impl AsRef<Path>, session_id: SessionId) -> anyhow::Result<Self> {
+        let session_dir = session_dir.as_ref();
         std::fs::create_dir_all(session_dir)?;
         let path = session_dir.join(format!("{session_id}.jsonl"));
         let file = OpenOptions::new()

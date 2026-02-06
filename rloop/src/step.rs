@@ -191,10 +191,11 @@ fn determine_outcome(
 /// Returns an error if Claude client connection, query, or stream processing fails.
 pub async fn execute_step(
     task: &Task,
-    worktree_path: &Path,
+    worktree_path: impl AsRef<Path>,
     config: &Config,
     prior_learnings: &[String],
 ) -> anyhow::Result<StepResult> {
+    let worktree_path = worktree_path.as_ref();
     let start = Instant::now();
 
     // 1. Build prompt

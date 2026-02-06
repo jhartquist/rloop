@@ -232,7 +232,7 @@ fn finish_failed_task(
 /// # Errors
 /// Returns an error if session initialization, task loading, DAG resolution, or execution fails.
 pub async fn run_session(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     target_task: TaskId,
     config: &Config,
     auto_merge: bool,
@@ -245,12 +245,13 @@ pub async fn run_session(
 /// # Errors
 /// Returns an error if session initialization, task loading, DAG resolution, or execution fails.
 pub async fn run_session_with<E: StepExecutor>(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     target_task: TaskId,
     config: &Config,
     auto_merge: bool,
     executor: &E,
 ) -> anyhow::Result<SessionResult> {
+    let repo = repo.as_ref();
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = repo.join(".rloop").join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
@@ -344,7 +345,7 @@ pub async fn run_session_with<E: StepExecutor>(
 /// # Errors
 /// Returns an error if session initialization, task loading, DAG resolution, or execution fails.
 pub async fn run_all_session(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     config: &Config,
     auto_merge: bool,
 ) -> anyhow::Result<SessionResult> {
@@ -356,11 +357,12 @@ pub async fn run_all_session(
 /// # Errors
 /// Returns an error if session initialization, task loading, DAG resolution, or execution fails.
 pub async fn run_all_session_with<E: StepExecutor>(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     config: &Config,
     auto_merge: bool,
     executor: &E,
 ) -> anyhow::Result<SessionResult> {
+    let repo = repo.as_ref();
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = repo.join(".rloop").join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;

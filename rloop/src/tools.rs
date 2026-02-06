@@ -29,8 +29,9 @@ pub struct Tools {
 #[must_use]
 pub fn create_tools(
     verification: Option<&VerificationCommands>,
-    worktree_path: &Path,
+    worktree_path: impl AsRef<Path>,
 ) -> Tools {
+    let worktree_path = worktree_path.as_ref();
     let summary: Arc<Mutex<Option<String>>> = Arc::default();
     let stop: Arc<AtomicBool> = Arc::default();
 

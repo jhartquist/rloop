@@ -34,10 +34,11 @@ fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
 /// # Errors
 /// Returns an error if directory creation fails or git worktree command fails.
 pub fn create_worktree(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     task_id: TaskId,
     base_branch: &str,
 ) -> anyhow::Result<Worktree> {
+    let repo = repo.as_ref();
     let label = format!("{task_id:02}");
     let worktree_dir = repo.join(".rloop").join("worktrees");
     std::fs::create_dir_all(&worktree_dir)
@@ -107,10 +108,11 @@ pub fn unlock_worktree(worktree: &Worktree) -> anyhow::Result<()> {
 /// # Errors
 /// Returns an error if checkout or merge commands fail.
 pub fn merge_worktree(
-    repo: &Path,
+    repo: impl AsRef<Path>,
     worktree: &Worktree,
     into_branch: &str,
 ) -> anyhow::Result<()> {
+    let repo = repo.as_ref();
     git(repo, &["checkout", into_branch])
         .with_context(|| format!("failed to checkout {into_branch}"))?;
 
@@ -129,7 +131,8 @@ pub fn merge_worktree(
 ///
 /// # Errors
 /// Returns an error if worktree removal or branch deletion commands fail.
-pub fn cleanup_worktree(repo: &Path, worktree: &Worktree) -> anyhow::Result<()> {
+pub fn cleanup_worktree(repo: impl AsRef<Path>, worktree: &Worktree) -> anyhow::Result<()> {
+    let repo = repo.as_ref();
     // Try unlocking — ignore errors since it may not be locked
     let wt_path_str = worktree
         .path

@@ -47,7 +47,8 @@ max_retries = 10
 ///
 /// # Errors
 /// Returns an error if the config file exists but contains invalid TOML or unrecognized values.
-pub fn load_config(rloop_dir: &Path) -> anyhow::Result<Config> {
+pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
+    let rloop_dir = rloop_dir.as_ref();
     let config_path = rloop_dir.join("config.toml");
 
     if !config_path.exists() {
@@ -74,7 +75,8 @@ pub fn load_config(rloop_dir: &Path) -> anyhow::Result<Config> {
 ///
 /// # Errors
 /// Returns an error if directory creation or file writing fails due to permissions or I/O issues.
-pub fn init_rloop_dir(repo: &Path) -> anyhow::Result<PathBuf> {
+pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+    let repo = repo.as_ref();
     let rloop_dir = repo.join(".rloop");
 
     for subdir in &["tasks", "worktrees", "sessions"] {

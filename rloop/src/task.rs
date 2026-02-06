@@ -106,7 +106,8 @@ fn split_frontmatter(content: &str) -> anyhow::Result<(&str, &str)> {
 ///
 /// # Errors
 /// Returns an error if the file cannot be read, has invalid frontmatter, or contains invalid YAML.
-pub fn load_task(path: &Path) -> anyhow::Result<Task> {
+pub fn load_task(path: impl AsRef<Path>) -> anyhow::Result<Task> {
+    let path = path.as_ref();
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read task file: {}", path.display()))?;
 
@@ -149,7 +150,8 @@ fn is_task_filename(path: &Path) -> bool {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read or any task file fails to parse.
-pub fn load_all_tasks(dir: &Path) -> anyhow::Result<Vec<Task>> {
+pub fn load_all_tasks(dir: impl AsRef<Path>) -> anyhow::Result<Vec<Task>> {
+    let dir = dir.as_ref();
     let mut tasks: Vec<Task> = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read task directory: {}", dir.display()))?
         .filter_map(Result::ok)
