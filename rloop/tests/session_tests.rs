@@ -207,7 +207,7 @@ async fn session_branch_naming() {
     let result = run_session_with(&repo, TaskId(5), &default_config(), false, &executor)
         .await
         .unwrap();
-    assert_eq!(result.branch, "rloop/05");
+    assert_eq!(result.branch, "rloop-05");
 }
 
 #[tokio::test]
@@ -286,7 +286,7 @@ async fn run_all_tasks() {
         .await
         .unwrap();
     assert_eq!(result.completed_tasks.len(), 3);
-    assert!(result.branch.contains("rloop/all-"));
+    assert!(result.branch.contains("rloop-all-"));
 }
 
 #[tokio::test]

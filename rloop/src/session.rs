@@ -258,7 +258,7 @@ pub async fn run_session_with<E: StepExecutor>(
     let task_by_id = |id: TaskId| -> Option<&Task> { tasks.iter().find(|t| t.id == id) };
 
     // Create session branch off current HEAD
-    let session_branch = format!("rloop/{target_task:02}");
+    let session_branch = format!("rloop-{target_task:02}");
     create_session_branch(repo, &session_branch)
         .with_context(|| format!("failed to create session branch {session_branch}"))?;
 
@@ -388,7 +388,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
 
     // Create session branch
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let session_branch = format!("rloop/all-{timestamp}");
+    let session_branch = format!("rloop-all-{timestamp}");
     create_session_branch(repo, &session_branch)
         .with_context(|| format!("failed to create session branch {session_branch}"))?;
 

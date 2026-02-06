@@ -179,7 +179,7 @@ fn cleanup_worktrees(repo: &std::path::Path) {
         };
         let wt = rloop::git::Worktree {
             path: path.clone(),
-            branch: format!("rloop/wt/{name}"),
+            branch: format!("rloop-wt-{name}"),
             task_id: rloop::task::TaskId(id),
         };
         if let Err(e) = rloop::git::cleanup_worktree(repo, &wt) {

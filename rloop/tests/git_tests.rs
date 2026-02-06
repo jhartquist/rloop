@@ -19,7 +19,7 @@ fn create_worktree_creates_branch() {
     let dir = tempfile::tempdir().unwrap();
     let repo = helpers::init_git_repo(dir.path());
     let wt = create_worktree(&repo, TaskId(1), "main").unwrap();
-    assert!(wt.branch.contains("rloop"));
+    assert!(wt.branch.starts_with("rloop-wt-"));
 }
 
 #[test]

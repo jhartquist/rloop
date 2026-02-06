@@ -53,7 +53,7 @@ pub fn create_worktree(
         .with_context(|| format!("failed to create {}", worktree_dir.display()))?;
 
     let wt_path = worktree_dir.join(&label);
-    let branch = format!("rloop/wt/{label}");
+    let branch = format!("rloop-wt-{label}");
 
     git(
         repo,
