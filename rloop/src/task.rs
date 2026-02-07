@@ -24,6 +24,7 @@ pub struct VerificationCommands(pub Vec<String>);
 /// A task loaded from a markdown file with YAML frontmatter.
 pub struct Task {
     pub id: TaskId,
+    pub title: String,
     pub model: Model,
     pub depends_on: Vec<TaskId>,
     pub verification: Option<VerificationCommands>,
@@ -72,6 +73,8 @@ where
 #[derive(Deserialize)]
 struct TaskFrontmatter {
     id: u32,
+    #[serde(default)]
+    title: String,
     #[serde(default = "default_model")]
     model: Model,
     #[serde(default)]
@@ -123,6 +126,7 @@ pub fn load_task(path: impl AsRef<Path>) -> anyhow::Result<Task> {
 
     Ok(Task {
         id: TaskId(fm.id),
+        title: fm.title,
         model: fm.model,
         depends_on: fm.depends_on.into_iter().map(TaskId).collect(),
         verification: fm.verification,
@@ -444,6 +448,7 @@ Do the thing.
     fn make_task(id: u32, deps: &[u32]) -> Task {
         Task {
             id: TaskId(id),
+            title: String::new(),
             model: Model::Sonnet,
             depends_on: deps.iter().map(|&d| TaskId(d)).collect(),
             verification: None,
@@ -643,6 +648,35 @@ Do the thing.
         let path = write_task_file(dir.path(), "00.md", content);
         let task = load_task(&path).unwrap();
         assert!(task.description.trim().is_empty());
+    }
+
+    // --- Title field tests ---
+
+    #[test]
+    fn parse_task_with_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 0\ntitle: Implement audio preprocessing\n---\nFull description.\n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "Implement audio preprocessing");
+    }
+
+    #[test]
+    fn parse_task_without_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 0\n---\nSome description.\n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "");
+    }
+
+    #[test]
+    fn parse_task_title_with_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 0\ntitle: \"Add `foo` & bar's \\\"thing\\\"\"\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert!(!task.title.is_empty());
     }
 
     // --- Edge case: TaskId boundaries ---

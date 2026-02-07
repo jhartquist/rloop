@@ -39,6 +39,9 @@ enum TaskAction {
     New {
         /// Task description (becomes the markdown body)
         description: String,
+        /// Short descriptive title for the task
+        #[arg(long)]
+        title: Option<String>,
         /// Model to use (Haiku, Sonnet, Opus)
         #[arg(long)]
         model: Option<ModelArg>,
@@ -98,10 +101,17 @@ async fn main() -> anyhow::Result<()> {
         Command::Task { action } => match action {
             TaskAction::New {
                 description,
+                title,
                 model,
                 depends_on,
                 verification,
-            } => cmd_task_new(&description, model, &depends_on, &verification),
+            } => cmd_task_new(
+                &description,
+                title.as_deref(),
+                model,
+                &depends_on,
+                &verification,
+            ),
         },
     }
 }
@@ -235,10 +245,13 @@ fn cleanup_worktrees(repo: &std::path::Path) {
 
 fn cmd_task_new(
     description: &str,
+    title: Option<&str>,
     model: Option<ModelArg>,
     depends_on: &[u32],
     verification: &[String],
 ) -> anyhow::Result<()> {
+    use std::fmt::Write;
+
     let repo = std::env::current_dir()?;
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir)?;
@@ -251,18 +264,21 @@ fn cmd_task_new(
         |m| m.0.to_string(),
     );
 
-    let mut frontmatter = format!("---\nid: {next_id}\nmodel: {model_str}\n");
+    let mut frontmatter = format!("---\nid: {next_id}\n");
+
+    if let Some(t) = title {
+        writeln!(frontmatter, "title: {t}").expect("write to String never fails");
+    }
+
+    writeln!(frontmatter, "model: {model_str}").expect("write to String never fails");
 
     if !depends_on.is_empty() {
-        use std::fmt::Write;
         let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
-        // write to String never fails
         writeln!(frontmatter, "depends_on: [{}]", deps.join(", "))
             .expect("write to String never fails");
     }
 
     if !verification.is_empty() {
-        use std::fmt::Write;
         if verification.len() == 1 {
             writeln!(frontmatter, "verification: \"{}\"", verification[0])
                 .expect("write to String never fails");
@@ -309,12 +325,15 @@ fn cmd_list() -> anyhow::Result<()> {
 
     for task in &tasks {
         let status = if task.completed { "done" } else { "    " };
-        let first_line = task
-            .description
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("(no description)");
-        eprintln!("[{status}] {:>2} - {first_line}", task.id);
+        let summary = if task.title.is_empty() {
+            task.description
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("(no description)")
+        } else {
+            &task.title
+        };
+        eprintln!("[{status}] {:>2} - {summary}", task.id);
     }
 
     Ok(())

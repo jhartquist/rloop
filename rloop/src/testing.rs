@@ -144,6 +144,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let dummy_task = crate::task::Task {
             id: TaskId(0),
+            title: String::new(),
             model: Model::Haiku,
             depends_on: vec![],
             verification: None,
@@ -193,6 +194,7 @@ mod tests {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let dummy_task = crate::task::Task {
                     id: TaskId(0),
+                    title: String::new(),
                     model: Model::Haiku,
                     depends_on: vec![],
                     verification: None,
