@@ -404,7 +404,10 @@ async fn process_stream(
         }
 
         if !interrupted && stop.load(Ordering::SeqCst) {
-            client.interrupt().await.ok();
+            // Best-effort interrupt — stream may already be closing
+            if let Err(e) = client.interrupt().await {
+                eprintln!("warning: failed to interrupt Claude stream: {e}");
+            }
             interrupted = true;
         }
     }
@@ -478,7 +481,10 @@ pub async fn execute_step(
 
     // 7. Stream and collect events
     let mut data = process_stream(&mut client, &stop, worktree_path).await?;
-    client.disconnect().await.ok();
+    // Best-effort disconnect — session data already captured
+    if let Err(e) = client.disconnect().await {
+        eprintln!("warning: failed to disconnect Claude client: {e}");
+    }
 
     // 8. Extract cost and session_id from Result message
     let cost_usd = if let Some(Message::Result(res)) = &data.result_message {

@@ -123,11 +123,16 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
         fs::write(&gitignore_path, "worktrees/\nsessions/\n")?;
     }
 
-    // Commit scaffolding (idempotent — only commits if there are staged changes)
-    let _ = crate::git::git(repo, &["add", ".rloop/config.toml", ".rloop/.gitignore"]);
+    // Commit scaffolding (idempotent — only commits if there are staged changes).
+    // These git commands may fail if the directory is not a git repo, which is fine.
+    if let Err(e) = crate::git::git(repo, &["add", ".rloop/config.toml", ".rloop/.gitignore"]) {
+        eprintln!("warning: failed to stage rloop scaffolding: {e}");
+    }
     let status = crate::git::git(repo, &["status", "--porcelain"]).unwrap_or_default();
-    if !status.is_empty() {
-        let _ = crate::git::git(repo, &["commit", "-m", "rloop: init"]);
+    if !status.is_empty()
+        && let Err(e) = crate::git::git(repo, &["commit", "-m", "rloop: init"])
+    {
+        eprintln!("warning: failed to commit rloop scaffolding: {e}");
     }
 
     Ok(rloop_dir)

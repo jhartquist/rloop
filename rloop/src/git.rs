@@ -149,10 +149,12 @@ pub fn fast_forward_ref(repo: impl AsRef<Path>, branch: &str, to_ref: &str) -> a
 /// Returns an error if worktree removal or branch deletion commands fail.
 pub fn cleanup_worktree(repo: impl AsRef<Path>, worktree: &Worktree) -> anyhow::Result<()> {
     let repo = repo.as_ref();
-    // Try unlocking — ignore errors since it may not be locked
     let wt_path_str = worktree.path.to_str().context("non-UTF-8 worktree path")?;
 
-    let _ = git(repo, &["worktree", "unlock", wt_path_str]);
+    // Best-effort unlock — worktree may not be locked
+    if let Err(e) = git(repo, &["worktree", "unlock", wt_path_str]) {
+        eprintln!("warning: failed to unlock worktree (may not be locked): {e}");
+    }
 
     git(repo, &["worktree", "remove", wt_path_str, "--force"])
         .with_context(|| format!("failed to remove worktree for task {}", worktree.task_id))?;

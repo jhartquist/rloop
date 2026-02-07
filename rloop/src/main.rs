@@ -78,6 +78,13 @@ impl std::str::FromStr for ModelArg {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Ensure panics are always visible on stderr, even if a TUI or alternate
+    // screen is active in the future. This hook runs before the default one
+    // would, guaranteeing the message reaches the user.
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("\nrloop panicked: {info}");
+    }));
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -211,16 +218,20 @@ fn cmd_task_new(
     if !depends_on.is_empty() {
         use std::fmt::Write;
         let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
-        writeln!(frontmatter, "depends_on: [{}]", deps.join(", ")).ok();
+        // write to String never fails
+        writeln!(frontmatter, "depends_on: [{}]", deps.join(", "))
+            .expect("write to String never fails");
     }
 
     if !verification.is_empty() {
         use std::fmt::Write;
         if verification.len() == 1 {
-            writeln!(frontmatter, "verification: \"{}\"", verification[0]).ok();
+            writeln!(frontmatter, "verification: \"{}\"", verification[0])
+                .expect("write to String never fails");
         } else {
             let quoted: Vec<String> = verification.iter().map(|v| format!("\"{v}\"")).collect();
-            writeln!(frontmatter, "verification: [{}]", quoted.join(", ")).ok();
+            writeln!(frontmatter, "verification: [{}]", quoted.join(", "))
+                .expect("write to String never fails");
         }
     }
 

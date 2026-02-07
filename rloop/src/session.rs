@@ -52,8 +52,9 @@ fn create_session_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
 
 fn emit(logger: &mut SessionLogger, event: &Event) {
     logger.print(event);
-    // Best-effort log — don't abort session on log write failure
-    let _ = logger.log(event);
+    if let Err(e) = logger.log(event) {
+        eprintln!("warning: failed to write session log: {e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +133,9 @@ async fn run_with_retries<E: StepExecutor>(
 
         // Log all Claude stream events from this step
         for event in &step_result.events {
-            let _ = logger.log(event);
+            if let Err(e) = logger.log(event) {
+                eprintln!("warning: failed to write stream event to session log: {e}");
+            }
         }
 
         match &step_result.outcome {

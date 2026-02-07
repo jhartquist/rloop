@@ -102,9 +102,14 @@ fn run_verification(
             match child.wait_timeout(dur) {
                 Ok(Some(s)) => s,
                 Ok(None) => {
-                    // Timed out — kill the process tree
-                    child.kill().ok();
-                    child.wait().ok();
+                    // Timed out — kill and reap. Errors here are non-fatal since
+                    // the process may have already exited between timeout and kill.
+                    if let Err(e) = child.kill() {
+                        eprintln!("warning: failed to kill timed-out verification process: {e}");
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("warning: failed to reap timed-out verification process: {e}");
+                    }
                     return Err(format!(
                         "Verification timed out after {}s: {cmd}",
                         dur.as_secs()
@@ -119,11 +124,14 @@ fn run_verification(
         };
 
         if !status.success() {
+            // Best-effort pipe reads — partial output is still useful for diagnostics
             let stdout = child
                 .stdout
                 .map(|mut r| {
                     let mut s = String::new();
-                    std::io::Read::read_to_string(&mut r, &mut s).ok();
+                    if let Err(e) = std::io::Read::read_to_string(&mut r, &mut s) {
+                        eprintln!("warning: failed to read verification stdout: {e}");
+                    }
                     s
                 })
                 .unwrap_or_default();
@@ -131,7 +139,9 @@ fn run_verification(
                 .stderr
                 .map(|mut r| {
                     let mut s = String::new();
-                    std::io::Read::read_to_string(&mut r, &mut s).ok();
+                    if let Err(e) = std::io::Read::read_to_string(&mut r, &mut s) {
+                        eprintln!("warning: failed to read verification stderr: {e}");
+                    }
                     s
                 })
                 .unwrap_or_default();
