@@ -13,7 +13,10 @@ pub struct Worktree {
 }
 
 /// Run a git command in the given directory, returning trimmed stdout on success.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+///
+/// # Errors
+/// Returns an error if the git command fails or returns a non-zero exit code.
+pub fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)

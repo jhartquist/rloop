@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
 
     // Load a single task
     println!("=== Single task ===");
-    let task = load_task(&tasks_dir.join("01.md"))?;
+    let task = load_task(tasks_dir.join("01.md"))?;
     println!("  ID:           {}", task.id);
     println!("  Model:        {}", task.model);
     println!("  Depends on:   {:?}", task.depends_on);

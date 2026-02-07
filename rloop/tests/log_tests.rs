@@ -1,5 +1,3 @@
-mod helpers;
-
 use rloop::log::{Event, SessionLogger};
 use rloop::session::SessionId;
 use rloop::task::TaskId;

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -300,6 +301,15 @@ fn cmd_task_new(
     let content = format!("{frontmatter}\n{description}\n");
     let path = tasks_dir.join(&filename);
     std::fs::write(&path, content)?;
+
+    let path_str = path.to_str().context("non-UTF-8 task path")?;
+    rloop::git::git(&repo, &["add", path_str])?;
+
+    let commit_msg = match title {
+        Some(t) => format!("task: add {next_id:02} - {t}"),
+        None => format!("task: add {next_id:02}"),
+    };
+    rloop::git::git(&repo, &["commit", "-m", &commit_msg])?;
 
     eprintln!("Created task {next_id:02} at {}", path.display());
     Ok(())
