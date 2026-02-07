@@ -561,4 +561,110 @@ Do the thing.
         let plan = resolve_all_dag(&tasks).unwrap();
         assert!(plan.steps.is_empty());
     }
+
+    // --- Edge case: large task count ---
+
+    #[test]
+    fn dag_large_linear_chain_100_tasks() {
+        let tasks: Vec<Task> = (0..100)
+            .map(|i| {
+                if i == 0 {
+                    make_task(i, &[])
+                } else {
+                    make_task(i, &[i - 1])
+                }
+            })
+            .collect();
+
+        let plan = resolve_dag(&tasks, TaskId(99)).unwrap();
+        assert_eq!(plan.steps.len(), 100);
+        assert_eq!(plan.steps[0], TaskId(0));
+        assert_eq!(*plan.steps.last().unwrap(), TaskId(99));
+
+        // Verify ordering: each task appears after its dependency
+        for (pos, id) in plan.steps.iter().enumerate() {
+            if id.0 > 0 {
+                let dep_pos = plan
+                    .steps
+                    .iter()
+                    .position(|t| *t == TaskId(id.0 - 1))
+                    .unwrap();
+                assert!(dep_pos < pos, "task {id} should come after its dependency");
+            }
+        }
+    }
+
+    #[test]
+    fn dag_all_large_task_count_150() {
+        let tasks: Vec<Task> = (0..150)
+            .map(|i| {
+                if i == 0 {
+                    make_task(i, &[])
+                } else {
+                    make_task(i, &[i - 1])
+                }
+            })
+            .collect();
+
+        let plan = resolve_all_dag(&tasks).unwrap();
+        assert_eq!(plan.steps.len(), 150);
+    }
+
+    // --- Edge case: unicode and special characters ---
+
+    #[test]
+    fn parse_task_unicode_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 0\n---\n# 日本語タスク\n\n这是中文描述。\n\nEmoji: 🦀🔧✅\n\nRTL: مرحبا بالعالم\n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert!(task.description.contains("日本語タスク"));
+        assert!(task.description.contains("这是中文描述"));
+        assert!(task.description.contains('🦀'));
+        assert!(task.description.contains("مرحبا"));
+    }
+
+    #[test]
+    fn parse_task_special_chars_in_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 0\n---\nTabs:\there\nBackslash: C:\\path\\file\nQuotes: \"hello\" 'world'\nAngle: <div>&amp;</div>\n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert!(task.description.contains("Tabs:\there"));
+        assert!(task.description.contains("C:\\path\\file"));
+        assert!(task.description.contains("\"hello\""));
+    }
+
+    #[test]
+    fn parse_task_empty_description_body() {
+        let dir = tempfile::tempdir().unwrap();
+        // Frontmatter with only whitespace after it
+        let content = "---\nid: 0\n---\n   \n  \n";
+        let path = write_task_file(dir.path(), "00.md", content);
+        let task = load_task(&path).unwrap();
+        assert!(task.description.trim().is_empty());
+    }
+
+    // --- Edge case: TaskId boundaries ---
+
+    #[test]
+    fn task_id_display_zero() {
+        assert_eq!(TaskId(0).to_string(), "00");
+    }
+
+    #[test]
+    fn task_id_display_large() {
+        // Three-digit task IDs display without padding
+        assert_eq!(TaskId(999).to_string(), "999");
+    }
+
+    #[test]
+    fn task_id_roundtrip_json_boundary() {
+        for id in [0, 1, 99, 100, u32::MAX] {
+            let tid = TaskId(id);
+            let json = serde_json::to_string(&tid).unwrap();
+            let back: TaskId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, tid);
+        }
+    }
 }

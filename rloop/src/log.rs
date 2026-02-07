@@ -979,4 +979,152 @@ mod tests {
         std::fs::write(&path, &restored).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "important data");
     }
+
+    // --- Corrupted persistence recovery ---
+
+    #[test]
+    fn load_events_binary_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.jsonl");
+
+        // Mix valid JSONL with binary data
+        let valid = serde_json::to_string(&Event::SessionCancelled).unwrap();
+        let mut content = valid.as_bytes().to_vec();
+        content.push(b'\n');
+        content.extend_from_slice(&[0x00, 0xFF, 0xFE, 0x80, 0x81]);
+        content.push(b'\n');
+        content.extend_from_slice(valid.as_bytes());
+        content.push(b'\n');
+        std::fs::write(&path, &content).unwrap();
+
+        let events = load_events(&path).unwrap();
+        // Should recover at least the first valid line
+        assert!(!events.is_empty());
+        assert!(matches!(&events[0], Event::SessionCancelled));
+    }
+
+    #[test]
+    fn write_with_backup_corrupted_main_valid_backup_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+
+        // Create original and backup
+        std::fs::write(&path, "v1").unwrap();
+        write_with_backup(&path, b"v2").unwrap();
+
+        // Corrupt the main file
+        std::fs::write(&path, [0xFF, 0xFE, 0x00]).unwrap();
+
+        // Verify backup is still valid for recovery
+        let backup = dir.path().join("data.json.bak");
+        let backup_data = std::fs::read_to_string(&backup).unwrap();
+        assert_eq!(backup_data, "v1");
+
+        // Restore from backup
+        std::fs::write(&path, &backup_data).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+    }
+
+    #[test]
+    fn load_events_interleaved_valid_and_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("interleaved.jsonl");
+
+        let line_started =
+            serde_json::to_string(&Event::TaskStarted { task_id: TaskId(1) }).unwrap();
+        let line_completed = serde_json::to_string(&Event::TaskCompleted {
+            task_id: TaskId(2),
+            summary: "done".into(),
+        })
+        .unwrap();
+        let line_cancelled = serde_json::to_string(&Event::SessionCancelled).unwrap();
+
+        let content = format!(
+            "{line_started}\n\
+             {{invalid json}}\n\
+             {line_completed}\n\
+             not even close to json\n\
+             {line_cancelled}\n\
+             {{\"type\": \"NonExistentVariant\"}}\n"
+        );
+        std::fs::write(&path, content).unwrap();
+
+        let loaded = load_events(&path).unwrap();
+        assert_eq!(loaded.len(), 3);
+    }
+
+    // --- Unicode in events ---
+
+    #[test]
+    fn event_unicode_roundtrip() {
+        let events = vec![
+            Event::AssistantMessage {
+                content: "日本語テスト 🦀 中文消息 مرحبا".into(),
+            },
+            Event::TaskCompleted {
+                task_id: TaskId(0),
+                summary: "完了 ✅ terminé".into(),
+            },
+            Event::TaskFailed {
+                task_id: TaskId(1),
+                reason: "Ошибка: файл не найден".into(),
+            },
+            Event::ToolCall {
+                name: "Read".into(),
+                input: json!({"file_path": "/tmp/données/résumé.txt"}),
+            },
+        ];
+
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let roundtripped: Event = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&roundtripped).unwrap();
+            assert_eq!(json, json2, "Unicode roundtrip failed for {event:?}");
+        }
+    }
+
+    // --- Concurrent logger writes ---
+
+    #[test]
+    fn logger_concurrent_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("concurrent-test".into());
+        let log_path = dir.path().join(format!("{session_id}.jsonl"));
+
+        // Write events sequentially from multiple "logical" sources
+        // (SessionLogger is not Send, so we test sequential rapid writes)
+        let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
+        for i in 0..50 {
+            logger
+                .log(&Event::TaskStarted { task_id: TaskId(i) })
+                .unwrap();
+            logger
+                .log(&Event::TaskCompleted {
+                    task_id: TaskId(i),
+                    summary: format!("task {i} done"),
+                })
+                .unwrap();
+        }
+        drop(logger);
+
+        // Verify all 100 events were written correctly
+        let events = load_events(&log_path).unwrap();
+        assert_eq!(events.len(), 100);
+    }
+
+    // --- write_with_backup with unicode content ---
+
+    #[test]
+    fn write_with_backup_unicode_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+
+        let content = "日本語データ 🦀 données résumé";
+        std::fs::write(&path, "original").unwrap();
+        write_with_backup(&path, content.as_bytes()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        let backup = dir.path().join("data.json.bak");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+    }
 }

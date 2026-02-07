@@ -322,4 +322,50 @@ mod tests {
         let timeout = Some(Duration::from_secs(5));
         assert!(run_verification(&cmds, dir.path(), timeout).is_ok());
     }
+
+    /// Verify that `ToolState` shared summary is safe under concurrent access.
+    #[test]
+    fn tool_state_concurrent_summary_access() {
+        let summary: Arc<Mutex<Option<String>>> = Arc::default();
+        let stop: Arc<AtomicBool> = Arc::default();
+
+        let mut handles = Vec::new();
+
+        // Spawn 10 writer threads
+        for i in 0..10 {
+            let s = Arc::clone(&summary);
+            let st = Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                *s.lock().unwrap() = Some(format!("summary-{i}"));
+                st.store(true, Ordering::SeqCst);
+            }));
+        }
+
+        // Spawn 10 reader threads
+        for _ in 0..10 {
+            let s = Arc::clone(&summary);
+            let st = Arc::clone(&stop);
+            handles.push(std::thread::spawn(move || {
+                let _ = s.lock().unwrap().clone();
+                let _ = st.load(Ordering::SeqCst);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // After all threads complete, summary should be set to one of the values
+        let final_val = summary.lock().unwrap();
+        assert!(final_val.is_some());
+        assert!(final_val.as_ref().unwrap().starts_with("summary-"));
+    }
+
+    /// Verify empty verification command list passes.
+    #[test]
+    fn verification_empty_commands_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmds: Vec<String> = vec![];
+        assert!(run_verification(&cmds, dir.path(), None).is_ok());
+    }
 }

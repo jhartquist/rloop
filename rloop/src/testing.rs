@@ -161,4 +161,60 @@ mod tests {
         let r2 = rt.block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[]));
         assert!(r2.is_err());
     }
+
+    /// Verify `PlaybackExecutor`'s `Mutex`-backed results are safe under concurrent access
+    /// from multiple threads all popping from the same shared queue.
+    #[test]
+    fn playback_concurrent_access() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.json");
+
+        // Create 20 results
+        let results: Vec<StepResult> = (0..20).map(sample_result).collect();
+        let json = serde_json::to_string_pretty(&results).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        let executor = Arc::new(PlaybackExecutor::load(&path).unwrap());
+        let collected: Arc<Mutex<Vec<TaskId>>> = Arc::default();
+        let mut handles = Vec::new();
+
+        // Spawn 20 threads, each consuming one result
+        for _ in 0..20 {
+            let ex = Arc::clone(&executor);
+            let ids = Arc::clone(&collected);
+            handles.push(std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let dummy_task = crate::task::Task {
+                    id: TaskId(0),
+                    model: Model::Haiku,
+                    depends_on: vec![],
+                    verification: None,
+                    completed: false,
+                    description: String::new(),
+                    source_path: std::path::PathBuf::new(),
+                };
+                let config = Config::default();
+                if let Ok(result) =
+                    rt.block_on(ex.execute(&dummy_task, Path::new("/tmp"), &config, &[]))
+                {
+                    ids.lock().unwrap().push(result.task_id);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let ids = collected.lock().unwrap();
+        assert_eq!(ids.len(), 20, "all 20 results should be consumed");
+
+        // Each task ID 0..20 should appear exactly once
+        let mut sorted: Vec<u32> = ids.iter().map(|t| t.0).collect();
+        sorted.sort_unstable();
+        let expected: Vec<u32> = (0..20).collect();
+        assert_eq!(sorted, expected);
+    }
 }
