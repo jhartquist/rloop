@@ -299,11 +299,9 @@ impl ContextTracker {
 
         let input = get_u64(usage, "input_tokens");
         let cache_read = get_u64(usage, "cache_read_input_tokens");
-        let cache_create = get_u64(usage, "cache_creation_input_tokens");
-        let output = get_u64(usage, "output_tokens");
 
         #[allow(clippy::cast_precision_loss)]
-        let used = (input + cache_read + cache_create + output) as f64;
+        let used = (input + cache_read) as f64;
         #[allow(clippy::cast_possible_truncation)]
         let pct = ((used / CONTEXT_WINDOW) * 100.0) as f32;
         self.last_percentage = pct;
@@ -648,6 +646,53 @@ mod tests {
         assert_eq!(
             result_with_session.model_id.as_deref(),
             Some("claude-opus-4-20250514")
+        );
+    }
+
+    #[test]
+    fn context_tracker_percentage_calculation() {
+        let mut tracker = ContextTracker::new();
+
+        // Build usage JSON matching the scenario from the task:
+        // input=10k, cache_read=50k, cache_create=5k, output=2k
+        let usage = serde_json::json!({
+            "input_tokens": 10_000,
+            "cache_read_input_tokens": 50_000,
+            "cache_creation_input_tokens": 5_000,
+            "output_tokens": 2_000,
+        });
+
+        // First update should succeed (new message)
+        let updated = tracker.update(Some("msg-1"), &usage);
+        assert!(updated);
+
+        // Expected: (10k + 50k) / 200k * 100 = 30%
+        // NOT: (10k + 50k + 5k + 2k) / 200k * 100 = 33.5%
+        let pct = tracker.percentage();
+        assert!(
+            (pct - 30.0).abs() < 0.01,
+            "expected 30%, got {pct}%"
+        );
+
+        // Second update with same message_id should be ignored (duplicate content block)
+        let updated = tracker.update(Some("msg-1"), &usage);
+        assert!(!updated);
+
+        // Third update with new message_id should succeed
+        let usage2 = serde_json::json!({
+            "input_tokens": 5_000,
+            "cache_read_input_tokens": 25_000,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 1_000,
+        });
+        let updated = tracker.update(Some("msg-2"), &usage2);
+        assert!(updated);
+
+        // Expected: (5k + 25k) / 200k * 100 = 15%
+        let pct = tracker.percentage();
+        assert!(
+            (pct - 15.0).abs() < 0.01,
+            "expected 15%, got {pct}%"
         );
     }
 }
