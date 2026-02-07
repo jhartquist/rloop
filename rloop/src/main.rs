@@ -423,7 +423,8 @@ fn build_task_file(
     let mut fm = format!("---\nid: {id}\n");
 
     if !task.title.is_empty() {
-        writeln!(fm, "title: {}", task.title).expect("write to String never fails");
+        let escaped_title = task.title.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(fm, "title: \"{}\"", escaped_title).expect("write to String never fails");
     }
 
     writeln!(fm, "model: {}", task.model).expect("write to String never fails");
@@ -492,7 +493,8 @@ fn cmd_task_add(
     // Build frontmatter
     let model_name = model.map_or(rloop::model::Model::Sonnet, |m| m.0);
 
-    let mut fm = format!("---\nid: {id}\ntitle: {title}\nmodel: {model_name}\n");
+    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut fm = format!("---\nid: {id}\ntitle: \"{escaped_title}\"\nmodel: {model_name}\n");
 
     if !depends_on.is_empty() {
         let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();

@@ -731,6 +731,48 @@ Do the thing.
         }
     }
 
+    // --- Title with special characters (YAML quoting) ---
+
+    #[test]
+    fn parse_task_title_with_colon() {
+        let dir = tempfile::tempdir().unwrap();
+        // Title with colon must be quoted in YAML
+        let content = "---\nid: 5\ntitle: \"Fix: syntax error in parser\"\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "05.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "Fix: syntax error in parser");
+    }
+
+    #[test]
+    fn parse_task_title_with_quotes() {
+        let dir = tempfile::tempdir().unwrap();
+        // Inner quotes must be escaped with backslash
+        let content = "---\nid: 6\ntitle: \"Add \\\"real\\\" validation support\"\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "06.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "Add \"real\" validation support");
+    }
+
+    #[test]
+    fn parse_task_title_with_brackets_and_special() {
+        let dir = tempfile::tempdir().unwrap();
+        // Title with multiple special characters
+        let content = "---\nid: 7\ntitle: \"Refactor: [URGENT] fix memory leak - issue #42\"\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "07.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "Refactor: [URGENT] fix memory leak - issue #42");
+    }
+
+    #[test]
+    fn parse_task_title_with_backslash() {
+        let dir = tempfile::tempdir().unwrap();
+        // Backslash must be escaped
+        let content = "---\nid: 8\ntitle: \"Handle \\\\ path separators\"\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "08.md", content);
+        let task = load_task(&path).unwrap();
+        assert_eq!(task.title, "Handle \\ path separators");
+    }
+
     // --- mark_completed tests ---
 
     #[test]
