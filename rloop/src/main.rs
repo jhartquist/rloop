@@ -24,8 +24,6 @@ enum Command {
         #[arg(long)]
         auto_merge: bool,
     },
-    /// List tasks and their status
-    List,
     /// Manage tasks
     Task {
         #[command(subcommand)]
@@ -57,6 +55,8 @@ enum TaskAction {
         /// Task ID to show (e.g., 3 for task 03)
         id: u32,
     },
+    /// List tasks and their status
+    List,
 }
 
 /// Wrapper for Model CLI parsing (case-insensitive display in help).
@@ -102,7 +102,6 @@ async fn main() -> anyhow::Result<()> {
             all,
             auto_merge,
         } => cmd_run(id, all, auto_merge).await,
-        Command::List => cmd_list(),
         Command::Task { action } => match action {
             TaskAction::New {
                 description,
@@ -118,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
                 &verification,
             ),
             TaskAction::Show { id } => cmd_task_show(id),
+            TaskAction::List => cmd_list(),
         },
     }
 }
