@@ -344,7 +344,11 @@ pub async fn execute_step(
     let prompt = build_prompt(task, prior_learnings);
 
     // 2. Create MCP tools (complete + context_usage) and extract shared state
-    let tools = create_tools(task.verification.as_ref(), worktree_path);
+    let tools = create_tools(
+        task.verification.as_ref(),
+        worktree_path,
+        config.timeout_seconds,
+    );
     let summary = tools.state.summary;
     let stop = tools.state.stop;
 

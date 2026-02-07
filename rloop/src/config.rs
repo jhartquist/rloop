@@ -10,6 +10,8 @@ pub struct Config {
     pub model: Model,
     pub max_turns: u32,
     pub max_retries: u32,
+    /// Timeout in seconds for each verification command. `0` means no timeout.
+    pub timeout_seconds: u64,
 }
 
 impl Default for Config {
@@ -18,6 +20,7 @@ impl Default for Config {
             model: Model::Opus,
             max_turns: 50,
             max_retries: 10,
+            timeout_seconds: 300,
         }
     }
 }
@@ -33,6 +36,7 @@ impl Config {
                 model: self.model,
                 max_turns: self.max_turns,
                 max_retries: self.max_retries,
+                timeout_seconds: self.timeout_seconds,
             },
         };
         Ok(toml::to_string_pretty(&file)?)
@@ -51,6 +55,7 @@ struct StepSection {
     model: Option<Model>,
     max_turns: Option<u32>,
     max_retries: Option<u32>,
+    timeout_seconds: Option<u64>,
 }
 
 /// Intermediate representation for TOML output.
@@ -64,6 +69,7 @@ struct StepSectionOut {
     model: Model,
     max_turns: u32,
     max_retries: u32,
+    timeout_seconds: u64,
 }
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
@@ -90,6 +96,7 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         model: step.model.unwrap_or(defaults.model),
         max_turns: step.max_turns.unwrap_or(defaults.max_turns),
         max_retries: step.max_retries.unwrap_or(defaults.max_retries),
+        timeout_seconds: step.timeout_seconds.unwrap_or(defaults.timeout_seconds),
     })
 }
 
@@ -138,6 +145,7 @@ mod tests {
         assert!(matches!(config.model, Model::Opus));
         assert_eq!(config.max_turns, 50);
         assert_eq!(config.max_retries, 10);
+        assert_eq!(config.timeout_seconds, 300);
     }
 
     #[test]
@@ -154,13 +162,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "[step]\nmodel = \"Haiku\"\nmax_turns = 30\nmax_retries = 5\n",
+            "[step]\nmodel = \"Haiku\"\nmax_turns = 30\nmax_retries = 5\ntimeout_seconds = 60\n",
         )
         .unwrap();
         let config = load_config(dir.path()).unwrap();
         assert!(matches!(config.model, Model::Haiku));
         assert_eq!(config.max_turns, 30);
         assert_eq!(config.max_retries, 5);
+        assert_eq!(config.timeout_seconds, 60);
     }
 
     #[test]
@@ -213,6 +222,7 @@ mod tests {
         assert!(matches!(loaded.model, Model::Opus));
         assert_eq!(loaded.max_turns, 50);
         assert_eq!(loaded.max_retries, 10);
+        assert_eq!(loaded.timeout_seconds, 300);
     }
 
     #[test]

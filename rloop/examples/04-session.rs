@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         model: Model::Haiku,
         max_turns: 10,
         max_retries: 2,
+        timeout_seconds: 300,
     };
 
     println!("Running session targeting task 01...");

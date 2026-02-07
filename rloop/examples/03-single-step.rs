@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
         model: Model::Haiku,
         max_turns: 10,
         max_retries: 1,
+        timeout_seconds: 300,
     };
 
     // Create worktree

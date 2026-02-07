@@ -14,6 +14,7 @@ fn default_config() -> Config {
         model: Model::Haiku,
         max_turns: 50,
         max_retries: 3,
+        timeout_seconds: 300,
     }
 }
 
