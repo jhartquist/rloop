@@ -568,9 +568,15 @@ pub fn write_with_backup(path: impl AsRef<Path>, data: &[u8]) -> anyhow::Result<
 ///
 /// Formats assistant messages, tool calls, and tool results with colored labels
 /// and relative file paths. Tracks pending tool calls to correlate with results.
+///
+/// When `task_prefix` is set (parallel mode with `max_parallel > 1`), each line
+/// is prefixed with `[task XX]` so interleaved output from concurrent tasks is
+/// distinguishable.
 pub struct StreamPrinter {
     project_dir: PathBuf,
     pending_tools: HashMap<String, (String, serde_json::Value)>,
+    /// Prefix for parallel mode, e.g. `"[task 03] "`. Empty in sequential mode.
+    task_prefix: String,
 }
 
 impl StreamPrinter {
@@ -580,7 +586,16 @@ impl StreamPrinter {
         Self {
             project_dir,
             pending_tools: HashMap::new(),
+            task_prefix: String::new(),
         }
+    }
+
+    /// Set the task prefix for parallel mode.
+    ///
+    /// When `max_parallel > 1`, pass `Some(task_id)` to prefix output lines.
+    /// When `max_parallel == 1`, pass `None` to avoid noise.
+    pub fn set_task_prefix(&mut self, task_id: Option<crate::task::TaskId>) {
+        self.task_prefix = task_id.map_or_else(String::new, |id| format!("[task {id:02}] "));
     }
 
     /// Register a tool call so its result can be correlated later.
@@ -594,6 +609,15 @@ impl StreamPrinter {
         self.pending_tools.remove(id)
     }
 
+    /// Print a line to stderr with the optional task prefix.
+    fn ep(&self, msg: &str) {
+        if self.task_prefix.is_empty() {
+            eprintln!("{msg}");
+        } else {
+            eprintln!("{}{msg}", self.task_prefix);
+        }
+    }
+
     /// Pretty-print a stream event to the terminal.
     pub fn print(&self, event: &Event) {
         match event {
@@ -602,9 +626,9 @@ impl StreamPrinter {
                 let pad = "      ";
                 for (i, line) in content.lines().enumerate() {
                     if i == 0 {
-                        eprintln!("{label}  {line}");
+                        self.ep(&format!("{label}  {line}"));
                     } else {
-                        eprintln!("{pad}  {line}");
+                        self.ep(&format!("{pad}  {line}"));
                     }
                 }
             }
@@ -621,17 +645,17 @@ impl StreamPrinter {
                 cache_creation_input_tokens,
             } => {
                 let label = " USAGE".dimmed();
-                eprintln!(
+                self.ep(&format!(
                     "{label}  in={input_tokens} out={output_tokens} \
                      cache_read={cache_read_input_tokens} cache_create={cache_creation_input_tokens}"
-                );
+                ));
             }
             Event::ContextUsage {
                 percentage,
                 recommendation,
             } => {
                 let label = "   CTX".dimmed();
-                eprintln!("{label}  {percentage:.1}% — {recommendation}");
+                self.ep(&format!("{label}  {percentage:.1}% — {recommendation}"));
             }
             // Metric summaries are printed by SessionLogger, not StreamPrinter
             _ => {}
@@ -647,22 +671,30 @@ impl StreamPrinter {
                     .get("file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                eprintln!("{label}  {} {}", "Read".dimmed(), self.rel(path).dimmed());
+                self.ep(&format!(
+                    "{label}  {} {}",
+                    "Read".dimmed(),
+                    self.rel(path).dimmed()
+                ));
             }
             "Edit" => {
                 let path = input
                     .get("file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                eprintln!("{label}  {} {}", "Edit".dimmed(), self.rel(path).dimmed());
+                self.ep(&format!(
+                    "{label}  {} {}",
+                    "Edit".dimmed(),
+                    self.rel(path).dimmed()
+                ));
                 if let Some(old) = input.get("old_string").and_then(|v| v.as_str()) {
                     for line in old.lines() {
-                        eprintln!("{pad}  {} {}", "-".red(), line.dimmed());
+                        self.ep(&format!("{pad}  {} {}", "-".red(), line.dimmed()));
                     }
                 }
                 if let Some(new) = input.get("new_string").and_then(|v| v.as_str()) {
                     for line in new.lines() {
-                        eprintln!("{pad}  {} {}", "+".green(), line.dimmed());
+                        self.ep(&format!("{pad}  {} {}", "+".green(), line.dimmed()));
                     }
                 }
             }
@@ -671,27 +703,31 @@ impl StreamPrinter {
                     .get("file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                eprintln!("{label}  {} {}", "Write".dimmed(), self.rel(path).dimmed());
+                self.ep(&format!(
+                    "{label}  {} {}",
+                    "Write".dimmed(),
+                    self.rel(path).dimmed()
+                ));
                 if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
                     for line in content.lines() {
-                        eprintln!("{pad}  {}", line.dimmed());
+                        self.ep(&format!("{pad}  {}", line.dimmed()));
                     }
                 }
             }
             "Bash" => {
                 let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-                eprintln!(
+                self.ep(&format!(
                     "{label}  {} {}",
                     "Bash".dimmed(),
                     self.shorten(cmd).dimmed()
-                );
+                ));
             }
             other => {
                 let param = self.extract_key_param(input);
                 if param.is_empty() {
-                    eprintln!("{label}  {}", other.dimmed());
+                    self.ep(&format!("{label}  {}", other.dimmed()));
                 } else {
-                    eprintln!("{label}  {} {}", other.dimmed(), param.dimmed());
+                    self.ep(&format!("{label}  {} {}", other.dimmed(), param.dimmed()));
                 }
             }
         }
@@ -702,7 +738,7 @@ impl StreamPrinter {
 
         // Write/Edit: details already shown in CALL, just confirm
         if matches!(name, "Write" | "Edit") {
-            eprintln!("{label}  {}", format!("{name} ok").dimmed());
+            self.ep(&format!("{label}  {}", format!("{name} ok").dimmed()));
             return;
         }
 
@@ -715,10 +751,10 @@ impl StreamPrinter {
                 .get("numLines")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            eprintln!(
+            self.ep(&format!(
                 "{label}  {}",
                 format!("{} ({num_lines} lines)", self.rel(path)).dimmed()
-            );
+            ));
             return;
         }
 
@@ -730,14 +766,14 @@ impl StreamPrinter {
             .or_else(|| output.get("stdout").and_then(|v| v.as_str()))
             .or_else(|| output.get("output").and_then(|v| v.as_str()))
         {
-            eprintln!("{label}  {}", name.dimmed());
+            self.ep(&format!("{label}  {}", name.dimmed()));
             for line in text.lines() {
-                eprintln!("        {}", self.shorten(line).dimmed());
+                self.ep(&format!("        {}", self.shorten(line).dimmed()));
             }
             return;
         }
 
-        eprintln!("{label}  {}", format!("{name} ok").dimmed());
+        self.ep(&format!("{label}  {}", format!("{name} ok").dimmed()));
     }
 
     /// Strip `project_dir` prefix from a path string.

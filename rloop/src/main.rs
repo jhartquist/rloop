@@ -24,6 +24,9 @@ enum Command {
         /// Auto-merge session branch on success
         #[arg(long)]
         auto_merge: bool,
+        /// Maximum parallel tasks (overrides config `max_parallel`)
+        #[arg(long)]
+        parallel: Option<usize>,
     },
     /// Manage tasks
     Task {
@@ -131,7 +134,8 @@ async fn main() -> anyhow::Result<()> {
             id,
             all,
             auto_merge,
-        } => cmd_run(id, all, auto_merge).await,
+            parallel,
+        } => cmd_run(id, all, auto_merge, parallel).await,
         Command::Task { action } => match action {
             TaskAction::New {
                 description,
@@ -185,10 +189,21 @@ fn cmd_init() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_run(id: Option<u32>, all: bool, auto_merge: bool) -> anyhow::Result<()> {
+async fn cmd_run(
+    id: Option<u32>,
+    all: bool,
+    auto_merge: bool,
+    parallel: Option<usize>,
+) -> anyhow::Result<()> {
     let repo = std::env::current_dir()?;
     let rloop_dir = repo.join(".rloop");
-    let config = rloop::config::load_config(&rloop_dir)?;
+    let mut config = rloop::config::load_config(&rloop_dir)?;
+
+    // CLI --parallel overrides config max_parallel
+    if let Some(n) = parallel {
+        anyhow::ensure!(n >= 1, "--parallel must be at least 1");
+        config.max_parallel = n;
+    }
 
     if all {
         tokio::select! {

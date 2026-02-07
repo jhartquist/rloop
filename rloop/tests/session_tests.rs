@@ -1152,3 +1152,547 @@ async fn parallel_non_conflicting_writes_merge() {
     assert_eq!(result.completed_tasks.len(), 3);
     assert!(result.failed_tasks.is_empty());
 }
+
+// ===========================================================================
+// Phase 4: Comprehensive parallel execution tests
+// ===========================================================================
+
+// --- Diamond DAG with max_parallel=2: verify true concurrency ---
+
+#[tokio::test]
+async fn parallel_diamond_concurrent_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 0 → {1, 2} → 3
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Root"));
+    helpers::create_task_file(
+        &tasks_dir,
+        1,
+        &helpers::full_task(1, "Sonnet", &[0], None, false, "Left"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        2,
+        &helpers::full_task(2, "Sonnet", &[0], None, false, "Right"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        3,
+        &helpers::full_task(3, "Sonnet", &[1, 2], None, false, "Merge"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(2);
+    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+        .await
+        .unwrap();
+
+    // All 4 tasks complete
+    assert_eq!(result.completed_tasks.len(), 4);
+    assert!(result.failed_tasks.is_empty());
+    assert!(result.skipped_tasks.is_empty());
+
+    // Tasks 1 and 2 ran concurrently (peak >= 2)
+    assert!(
+        executor.peak_concurrency() >= 2,
+        "diamond branches should run concurrently, got peak={}",
+        executor.peak_concurrency()
+    );
+
+    // Execution order: 0 must run first, 3 must run last
+    let log = executor.executed_tasks();
+    let pos_0 = log.iter().position(|t| *t == TaskId(0)).unwrap();
+    let pos_3 = log.iter().position(|t| *t == TaskId(3)).unwrap();
+    assert_eq!(pos_0, 0, "root task should run first");
+    assert_eq!(pos_3, log.len() - 1, "merge task should run last");
+}
+
+// --- Wide independent DAG: 5 tasks, max_parallel=3, verify throttling ---
+
+#[tokio::test]
+async fn parallel_wide_five_tasks_throttled_to_three() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 5 independent tasks + a collector
+    for i in 0..5 {
+        helpers::create_task_file(
+            &tasks_dir,
+            i,
+            &helpers::minimal_task(i, &format!("Independent {i}")),
+        );
+    }
+    helpers::create_task_file(
+        &tasks_dir,
+        5,
+        &helpers::full_task(5, "Sonnet", &[0, 1, 2, 3, 4], None, false, "Collector"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(3);
+    let result = run_session_with(&repo, TaskId(5), &config, false, &executor)
+        .await
+        .unwrap();
+
+    assert_eq!(result.completed_tasks.len(), 6);
+    assert!(result.failed_tasks.is_empty());
+    // Peak concurrency should not exceed max_parallel=3
+    assert!(
+        executor.peak_concurrency() <= 3,
+        "peak concurrency should be <= 3, got {}",
+        executor.peak_concurrency()
+    );
+    // Should actually use concurrency (peak >= 2 with 5 independent tasks)
+    assert!(
+        executor.peak_concurrency() >= 2,
+        "should use concurrency with 5 independent tasks, got peak={}",
+        executor.peak_concurrency()
+    );
+}
+
+// --- Merge conflict with merge-fix: verify agent is invoked ---
+
+#[tokio::test]
+async fn parallel_merge_conflict_invokes_merge_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    let sessions_dir = repo.join(".rloop").join("sessions");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // Two independent tasks writing conflicting files
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Write A"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "Write B"));
+    helpers::commit_all(&repo, "add tasks");
+
+    let mut executor = FileWritingMockExecutor::new();
+    executor.add_write(0, "shared.txt", "content from task 0\n");
+    executor.add_write(1, "shared.txt", "content from task 1\n");
+
+    let config = parallel_config(2);
+    let _result = run_all_session_with(&repo, &config, false, &executor)
+        .await
+        .unwrap();
+
+    // Verify merge-fix events in session log
+    let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(!entries.is_empty());
+    let log_path = entries[0].path();
+    let events = load_events(&log_path).unwrap();
+
+    let merge_fix_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::MergeFixStarted { .. } | Event::MergeFixSucceeded { .. }
+            )
+        })
+        .collect();
+    assert!(
+        !merge_fix_events.is_empty(),
+        "merge-fix agent should be invoked for conflicting writes"
+    );
+}
+
+// --- Failure propagation: task fails mid-flight, sibling completes ---
+
+#[tokio::test]
+async fn parallel_failure_sibling_completes_dependent_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // Use run_all to include all tasks in the execution plan.
+    // Root: 0; siblings: 1 (fails), 2 (succeeds), 3 (independent of 0)
+    // Dependent: 4 depends on 1 and 2
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Root"));
+    helpers::create_task_file(
+        &tasks_dir,
+        1,
+        &helpers::full_task(1, "Sonnet", &[0], None, false, "Will fail"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        2,
+        &helpers::full_task(2, "Sonnet", &[0], None, false, "Will succeed"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        3,
+        &helpers::minimal_task(3, "Independent of DAG"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        4,
+        &helpers::full_task(4, "Sonnet", &[1, 2], None, false, "Blocked by 1"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let config = parallel_config(3);
+    let result = run_all_session_with(&repo, &config, false, &executor)
+        .await
+        .unwrap();
+
+    // Root succeeded
+    assert!(result.completed_tasks.contains(&TaskId(0)));
+    // Task 1 failed
+    assert!(result.failed_tasks.contains(&TaskId(1)));
+    // Task 2 should still succeed (independent sibling)
+    assert!(result.completed_tasks.contains(&TaskId(2)));
+    // Task 3 is independent and should succeed
+    assert!(result.completed_tasks.contains(&TaskId(3)));
+    // Task 4 is blocked by task 1
+    assert!(result.skipped_tasks.contains(&TaskId(4)));
+}
+
+// --- All-tasks parallel: run_all_session_with max_parallel > 1 ---
+
+#[tokio::test]
+async fn parallel_run_all_with_concurrency() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 3 independent tasks
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task A"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "Task B"));
+    helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "Task C"));
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(2);
+    let result = run_all_session_with(&repo, &config, false, &executor)
+        .await
+        .unwrap();
+
+    assert_eq!(result.completed_tasks.len(), 3);
+    assert!(result.failed_tasks.is_empty());
+    assert!(result.branch.contains("rloop-all-"));
+    // Should actually use concurrency with 3 independent tasks and max_parallel=2
+    assert!(
+        executor.peak_concurrency() >= 2,
+        "should use concurrency, got peak={}",
+        executor.peak_concurrency()
+    );
+    assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
+}
+
+// --- Session metrics aggregate correctly across parallel tasks ---
+
+#[tokio::test]
+async fn parallel_metrics_aggregate_correctly() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // Diamond: 0 → {1, 2} → 3
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Root"));
+    helpers::create_task_file(
+        &tasks_dir,
+        1,
+        &helpers::full_task(1, "Sonnet", &[0], None, false, "Left"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        2,
+        &helpers::full_task(2, "Sonnet", &[0], None, false, "Right"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        3,
+        &helpers::full_task(3, "Sonnet", &[1, 2], None, false, "Merge"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(2);
+    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+        .await
+        .unwrap();
+
+    let m = &result.metrics;
+    // 4 tasks × 0.01 cost each (ConcurrencyTrackingExecutor returns 0.01 per step)
+    assert!(
+        (m.cost_usd - 0.04).abs() < f64::EPSILON,
+        "cost: {} expected: 0.04",
+        m.cost_usd
+    );
+    assert_eq!(m.input_tokens, 4000); // 4 × 1000
+    assert_eq!(m.output_tokens, 2000); // 4 × 500
+    assert_eq!(m.cache_read_tokens, 400); // 4 × 100
+    assert_eq!(m.cache_creation_tokens, 200); // 4 × 50
+    assert!(m.duration.as_nanos() > 0, "duration should be non-zero");
+}
+
+// --- Session log events for parallel execution ---
+
+#[tokio::test]
+async fn parallel_session_log_contains_all_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    let sessions_dir = repo.join(".rloop").join("sessions");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 3 independent tasks
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "A"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "B"));
+    helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "C"));
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(2);
+    let _result = run_all_session_with(&repo, &config, false, &executor)
+        .await
+        .unwrap();
+
+    let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let events = load_events(entries[0].path()).unwrap();
+
+    // Should have TaskStarted for each task
+    let task_starts: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::TaskStarted { .. }))
+        .collect();
+    assert_eq!(task_starts.len(), 3, "one TaskStarted per task");
+
+    // Should have TaskCompleted events for each task (emitted from both
+    // retry loop and worktree execution, so 2 per successful task)
+    let task_completes: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::TaskCompleted { .. }))
+        .collect();
+    assert_eq!(
+        task_completes.len(),
+        6,
+        "two TaskCompleted per successful task"
+    );
+
+    // Should have StepSummary for each task
+    let step_summaries: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::StepSummary { .. }))
+        .collect();
+    assert_eq!(step_summaries.len(), 3, "one StepSummary per task");
+
+    // Should have TaskSummary for each task
+    let task_summaries: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::TaskSummary { .. }))
+        .collect();
+    assert_eq!(task_summaries.len(), 3, "one TaskSummary per task");
+
+    // Should have exactly one SessionSummary
+    let session_summaries: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::SessionSummary { .. }))
+        .collect();
+    assert_eq!(session_summaries.len(), 1, "one SessionSummary");
+}
+
+// --- Ctrl+C cleanup: verify worktrees dir is clean after cleanup ---
+
+#[tokio::test]
+async fn cleanup_worktrees_removes_all() {
+    // This test creates worktrees manually and verifies the cleanup function
+    // from main.rs works correctly for multiple simultaneous worktrees.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let worktrees_dir = repo.join(".rloop").join("worktrees");
+    std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+    // Create session branch
+    rloop::git::git(&repo, &["branch", "rloop-test"]).unwrap();
+
+    // Create multiple worktrees (simulating parallel execution)
+    let wt0 = rloop::git::create_worktree(&repo, TaskId(0), "rloop-test").unwrap();
+    let wt1 = rloop::git::create_worktree(&repo, TaskId(1), "rloop-test").unwrap();
+    let wt2 = rloop::git::create_worktree(&repo, TaskId(2), "rloop-test").unwrap();
+
+    // Verify worktrees exist
+    assert!(wt0.path.exists());
+    assert!(wt1.path.exists());
+    assert!(wt2.path.exists());
+
+    // Clean up all worktrees (simulating Ctrl+C handler)
+    for wt in &[&wt0, &wt1, &wt2] {
+        rloop::git::cleanup_worktree(&repo, wt).unwrap();
+    }
+
+    // Verify all worktrees are removed
+    assert!(!wt0.path.exists());
+    assert!(!wt1.path.exists());
+    assert!(!wt2.path.exists());
+
+    // Verify branches are deleted
+    let branches = rloop::git::git(&repo, &["branch"]).unwrap();
+    assert!(!branches.contains("rloop-wt-00"));
+    assert!(!branches.contains("rloop-wt-01"));
+    assert!(!branches.contains("rloop-wt-02"));
+}
+
+// --- Ctrl+C: verify scanning .rloop/worktrees/ finds all entries ---
+
+#[tokio::test]
+async fn cleanup_scan_finds_parallel_worktrees() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let worktrees_dir = repo.join(".rloop").join("worktrees");
+    std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+    rloop::git::git(&repo, &["branch", "rloop-test"]).unwrap();
+
+    // Create 3 worktrees
+    let _wt0 = rloop::git::create_worktree(&repo, TaskId(0), "rloop-test").unwrap();
+    let _wt1 = rloop::git::create_worktree(&repo, TaskId(1), "rloop-test").unwrap();
+    let _wt2 = rloop::git::create_worktree(&repo, TaskId(2), "rloop-test").unwrap();
+
+    // Scan worktrees directory (same logic as cleanup_worktrees in main.rs)
+    let entries: Vec<_> = std::fs::read_dir(&worktrees_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(entries.len(), 3, "should find 3 worktree directories");
+
+    // Parse task IDs from directory names
+    let mut ids: Vec<u32> = entries
+        .iter()
+        .filter_map(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.parse::<u32>().ok())
+        })
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![0, 1, 2]);
+
+    // Clean up for proper test teardown
+    for entry in &entries {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let id: u32 = name.parse().unwrap();
+        let wt = rloop::git::Worktree {
+            path: path.clone(),
+            branch: format!("rloop-wt-{name}"),
+            task_id: TaskId(id),
+        };
+        rloop::git::cleanup_worktree(&repo, &wt).unwrap();
+    }
+}
+
+// --- Non-conflicting parallel writes with different files merge cleanly ---
+
+#[tokio::test]
+async fn parallel_three_tasks_write_different_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 3 independent tasks writing different files
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Write A"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "Write B"));
+    helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "Write C"));
+    helpers::create_task_file(
+        &tasks_dir,
+        3,
+        &helpers::full_task(3, "Sonnet", &[0, 1, 2], None, false, "Collector"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let mut executor = FileWritingMockExecutor::new();
+    executor.add_write(0, "file_a.txt", "content A\n");
+    executor.add_write(1, "file_b.txt", "content B\n");
+    executor.add_write(2, "file_c.txt", "content C\n");
+
+    let config = parallel_config(3);
+    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+        .await
+        .unwrap();
+
+    assert_eq!(result.completed_tasks.len(), 4);
+    assert!(result.failed_tasks.is_empty());
+}
+
+// --- Auto-merge works with parallel execution ---
+
+#[tokio::test]
+async fn parallel_auto_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "A"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "B"));
+    helpers::create_task_file(
+        &tasks_dir,
+        2,
+        &helpers::full_task(2, "Sonnet", &[0, 1], None, false, "Merge"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let config = parallel_config(2);
+    let result = run_session_with(&repo, TaskId(2), &config, true, &executor)
+        .await
+        .unwrap();
+
+    assert!(result.auto_merged);
+    assert_eq!(result.completed_tasks.len(), 3);
+}
+
+// --- Failure prevents auto-merge in parallel ---
+
+#[tokio::test]
+async fn parallel_failure_prevents_auto_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Root"));
+    helpers::create_task_file(
+        &tasks_dir,
+        1,
+        &helpers::full_task(1, "Sonnet", &[0], None, false, "Fails"),
+    );
+    helpers::create_task_file(
+        &tasks_dir,
+        2,
+        &helpers::full_task(2, "Sonnet", &[0], None, false, "Succeeds"),
+    );
+    helpers::commit_all(&repo, "add tasks");
+
+    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let config = parallel_config(2);
+    let result = run_all_session_with(&repo, &config, true, &executor)
+        .await
+        .unwrap();
+
+    // Auto-merge should not happen because task 1 failed
+    assert!(!result.auto_merged);
+    assert!(result.failed_tasks.contains(&TaskId(1)));
+    assert!(result.completed_tasks.contains(&TaskId(2)));
+}

@@ -358,6 +358,7 @@ async fn process_stream(
     stop: &std::sync::atomic::AtomicBool,
     context_pct: &AtomicU32,
     worktree_path: &Path,
+    task_prefix: Option<TaskId>,
 ) -> anyhow::Result<StreamData> {
     let mut cc_session_id: Option<String> = None;
     let mut model_id: Option<String> = None;
@@ -366,6 +367,7 @@ async fn process_stream(
     let mut tokens = TokenTotals::default();
     let mut interrupted = false;
     let mut printer = StreamPrinter::new(worktree_path);
+    printer.set_task_prefix(task_prefix);
     let mut context_tracker = ContextTracker::new();
 
     let mut stream = client.receive_response();
@@ -542,7 +544,13 @@ pub async fn execute_step(
         .context("failed to send prompt to Claude")?;
 
     // 7. Stream and collect events
-    let mut data = process_stream(&mut client, &stop, &context_pct, worktree_path).await?;
+    let task_prefix = if config.max_parallel > 1 {
+        Some(task.id)
+    } else {
+        None
+    };
+    let mut data =
+        process_stream(&mut client, &stop, &context_pct, worktree_path, task_prefix).await?;
     // Best-effort disconnect — session data already captured
     if let Err(e) = client.disconnect().await {
         eprintln!("warning: failed to disconnect Claude client: {e}");

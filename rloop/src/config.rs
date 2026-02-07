@@ -171,6 +171,28 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
     })
 }
 
+/// Default config template for `rloop init` with comments documenting each option.
+fn default_config_template() -> String {
+    String::from(
+        "\
+[step]
+model = \"Opus\"
+max_turns = 50
+max_retries = 10
+timeout_seconds = 300
+
+[task]
+enhance_model = \"Sonnet\"
+
+[session]
+# Maximum number of tasks to execute in parallel.
+# Default is 1 (sequential). Set to 2-3 for parallel DAG execution.
+# Can also be overridden per-run with: rloop run --parallel N
+# max_parallel = 1
+",
+    )
+}
+
 /// Initialize `.rloop/` directory structure in a repo.
 /// Creates directories, default config, `.gitignore`, and commits the scaffolding.
 ///
@@ -186,7 +208,7 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
 
     let config_path = rloop_dir.join("config.toml");
     if !config_path.exists() {
-        fs::write(&config_path, Config::default().to_toml()?)?;
+        fs::write(&config_path, default_config_template())?;
     }
 
     let gitignore_path = rloop_dir.join(".gitignore");
@@ -444,5 +466,24 @@ mod tests {
         // Verify a commit was made with the scaffolding
         let log = run(&["log", "--oneline"]);
         assert!(log.contains("rloop: init"));
+    }
+
+    #[test]
+    fn init_template_is_parseable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), default_config_template()).unwrap();
+        let config = load_config(dir.path()).unwrap();
+        // Template has max_parallel commented out — should default to 1
+        assert_eq!(config.max_parallel, 1);
+        assert!(matches!(config.model, Model::Opus));
+        assert!(matches!(config.task.enhance_model, Model::Sonnet));
+    }
+
+    #[test]
+    fn init_template_documents_max_parallel() {
+        let template = default_config_template();
+        assert!(template.contains("[session]"));
+        assert!(template.contains("max_parallel"));
+        assert!(template.contains("--parallel"));
     }
 }
