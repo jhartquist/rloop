@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
         max_turns: 10,
         max_retries: 1,
         timeout_seconds: 300,
+        ..Config::default()
     };
 
     // Create worktree

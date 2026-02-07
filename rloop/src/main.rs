@@ -110,13 +110,19 @@ async fn main() -> anyhow::Result<()> {
                 model,
                 depends_on,
                 verification,
-            } => cmd_task_new(
-                &description,
-                title.as_deref(),
-                model,
-                &depends_on,
-                &verification,
-            ),
+            } => {
+                let repo = std::env::current_dir()?;
+                let rloop_dir = repo.join(".rloop");
+                let config = rloop::config::load_config(&rloop_dir)?;
+                cmd_task_new(
+                    &description,
+                    title.as_deref(),
+                    model,
+                    &depends_on,
+                    &verification,
+                    &config,
+                )
+            }
             TaskAction::Show { id } => cmd_task_show(id),
             TaskAction::List => cmd_list(),
         },
@@ -256,6 +262,7 @@ fn cmd_task_new(
     model: Option<ModelArg>,
     depends_on: &[u32],
     verification: &[String],
+    config: &rloop::config::Config,
 ) -> anyhow::Result<()> {
     use std::fmt::Write;
 
@@ -267,7 +274,7 @@ fn cmd_task_new(
     let filename = format!("{next_id:02}.md");
 
     let model_str = model.map_or_else(
-        || rloop::model::Model::Opus.to_string(),
+        || config.task.enhance_model.to_string(),
         |m| m.0.to_string(),
     );
 

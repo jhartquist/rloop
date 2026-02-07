@@ -12,6 +12,13 @@ pub struct Config {
     pub max_retries: u32,
     /// Timeout in seconds for each verification command. `0` means no timeout.
     pub timeout_seconds: u64,
+    pub task: TaskConfig,
+}
+
+/// Configuration for `rloop task` subcommands.
+pub struct TaskConfig {
+    /// Model used by `rloop task new` for the enhancement LLM query.
+    pub enhance_model: Model,
 }
 
 impl Default for Config {
@@ -21,6 +28,15 @@ impl Default for Config {
             max_turns: 50,
             max_retries: 10,
             timeout_seconds: 300,
+            task: TaskConfig::default(),
+        }
+    }
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self {
+            enhance_model: Model::Sonnet,
         }
     }
 }
@@ -38,6 +54,9 @@ impl Config {
                 max_retries: self.max_retries,
                 timeout_seconds: self.timeout_seconds,
             },
+            task: TaskSectionOut {
+                enhance_model: self.task.enhance_model,
+            },
         };
         Ok(toml::to_string_pretty(&file)?)
     }
@@ -48,6 +67,8 @@ impl Config {
 struct ConfigFile {
     #[serde(default)]
     step: Option<StepSection>,
+    #[serde(default)]
+    task: Option<TaskSection>,
 }
 
 #[derive(Deserialize)]
@@ -58,10 +79,16 @@ struct StepSection {
     timeout_seconds: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct TaskSection {
+    enhance_model: Option<Model>,
+}
+
 /// Intermediate representation for TOML output.
 #[derive(Serialize)]
 struct ConfigFileOut {
     step: StepSectionOut,
+    task: TaskSectionOut,
 }
 
 #[derive(Serialize)]
@@ -70,6 +97,11 @@ struct StepSectionOut {
     max_turns: u32,
     max_retries: u32,
     timeout_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct TaskSectionOut {
+    enhance_model: Model,
 }
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
@@ -88,8 +120,18 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
     let file: ConfigFile = toml::from_str(&contents)?;
     let defaults = Config::default();
 
+    let task_config = match file.task {
+        Some(task) => TaskConfig {
+            enhance_model: task.enhance_model.unwrap_or(defaults.task.enhance_model),
+        },
+        None => defaults.task,
+    };
+
     let Some(step) = file.step else {
-        return Ok(defaults);
+        return Ok(Config {
+            task: task_config,
+            ..defaults
+        });
     };
 
     Ok(Config {
@@ -97,6 +139,7 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         max_turns: step.max_turns.unwrap_or(defaults.max_turns),
         max_retries: step.max_retries.unwrap_or(defaults.max_retries),
         timeout_seconds: step.timeout_seconds.unwrap_or(defaults.timeout_seconds),
+        task: task_config,
     })
 }
 
@@ -151,6 +194,7 @@ mod tests {
         assert_eq!(config.max_turns, 50);
         assert_eq!(config.max_retries, 10);
         assert_eq!(config.timeout_seconds, 300);
+        assert!(matches!(config.task.enhance_model, Model::Sonnet));
     }
 
     #[test]
@@ -228,6 +272,42 @@ mod tests {
         assert_eq!(loaded.max_turns, 50);
         assert_eq!(loaded.max_retries, 10);
         assert_eq!(loaded.timeout_seconds, 300);
+        assert!(matches!(loaded.task.enhance_model, Model::Sonnet));
+    }
+
+    #[test]
+    fn load_task_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[task]\nenhance_model = \"Haiku\"\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(matches!(config.task.enhance_model, Model::Haiku));
+        // step defaults still apply
+        assert!(matches!(config.model, Model::Opus));
+    }
+
+    #[test]
+    fn load_task_section_defaults_enhance_model() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[task]\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(matches!(config.task.enhance_model, Model::Sonnet));
+    }
+
+    #[test]
+    fn load_both_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[step]\nmodel = \"Haiku\"\n\n[task]\nenhance_model = \"Opus\"\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(matches!(config.model, Model::Haiku));
+        assert!(matches!(config.task.enhance_model, Model::Opus));
     }
 
     #[test]

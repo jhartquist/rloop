@@ -16,6 +16,7 @@ fn default_config() -> Config {
         max_turns: 50,
         max_retries: 3,
         timeout_seconds: 300,
+        ..Config::default()
     }
 }
 

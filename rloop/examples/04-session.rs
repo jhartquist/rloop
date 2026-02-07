@@ -52,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         max_turns: 10,
         max_retries: 2,
         timeout_seconds: 300,
+        ..Config::default()
     };
 
     println!("Running session targeting task 01...");
