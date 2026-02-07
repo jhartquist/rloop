@@ -415,122 +415,161 @@ They share the same SDK (`ClaudeClient`, `ClaudeAgentOptions`) but the usage pat
 
 ---
 
-## 5. Implementation Sketch
+## 5. Implementation Sketch — REVISED
 
 ### New Files
 
-- `rloop/src/query.rs` — the `run_query` function (~100 lines)
-- Enhancement prompt constant or function in `main.rs` (or a dedicated `enhance.rs` if the prompt is large)
+- `rloop/src/query.rs` — the `run_query` function with `QueryConfig` and `QueryResult`
+- Enhancement prompt function in `main.rs` (or a dedicated `enhance.rs` if the prompt is large)
 
 ### Changes to Existing Files
 
 - `rloop/src/lib.rs` — add `pub mod query;`
-- `rloop/src/main.rs` — add `--enhance` flag to `TaskAction::New`, add `TaskAction::Refine`, update `cmd_task_new` to optionally call enhancement
-- `rloop/src/config.rs` — add `[task]` section with `auto_enhance` and `enhance_model`
+- `rloop/src/main.rs` — revise `TaskAction::New` (always enhances), add `TaskAction::Add` (programmatic), update `cmd_task_new` to call `run_query` with structured output
+- `rloop/src/config.rs` — add `[task]` section with `enhance_model`
 
 ### CLI Changes
 
 ```rust
 enum TaskAction {
+    /// Human workflow: "here's a rough idea, create tasks for me"
+    /// Always runs LLM. Can create multiple tasks. Infers deps.
     New {
         description: String,
         #[arg(long)]
-        title: Option<String>,
+        model: Option<ModelArg>,       // override enhance model
+        #[arg(long)]
+        verification: Vec<String>,     // applied to all created tasks
+    },
+    /// Programmatic workflow: "write exactly this task"
+    /// No LLM. Takes explicit fields. Body from --body or stdin.
+    Add {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: Option<String>,          // if absent, read from stdin
         #[arg(long)]
         model: Option<ModelArg>,
         #[arg(long = "depends-on", value_delimiter = ',')]
         depends_on: Vec<u32>,
         #[arg(long)]
         verification: Vec<String>,
-        #[arg(long)]
-        enhance: bool,           // NEW
-        #[arg(long)]
-        no_enhance: bool,        // NEW (overrides config default)
     },
     Show { id: u32 },
     List,
-    Refine {                     // NEW
-        id: u32,
-        #[arg(long)]
-        model: Option<ModelArg>,
-    },
 }
 ```
 
-### Flow for `rloop task new --enhance`
+### Structured Output Schema
+
+```rust
+#[derive(Deserialize, JsonSchema)]
+struct EnhancedTasks {
+    tasks: Vec<EnhancedTask>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct EnhancedTask {
+    title: String,
+    description: String,       // full markdown body
+    depends_on: Vec<u32>,      // existing task IDs or sibling task IDs
+    model: Option<String>,     // suggested model (Haiku/Sonnet/Opus)
+}
+```
+
+### Flow for `rloop task new "rough idea"`
 
 ```
 1. Parse CLI args
+2. Load all existing tasks (id, title, completed, depends_on)
+3. Build enhancement prompt:
+   - System: task planning instructions, output schema
+   - Context: CLAUDE.md (via project settings), existing task summaries
+   - User: the rough description
+4. Call run_query(prompt, QueryConfig { model: enhance_model, tools: [Read, Glob, Grep], output_format: EnhancedTasks schema })
+5. Parse structured output → Vec<EnhancedTask>
+6. For each task:
+   a. Assign next sequential ID
+   b. Build frontmatter (id, model, depends_on, verification, completed: false)
+   c. Write task file
+7. git add all new files + commit
+8. Print summary: "Created N tasks: 05 (title), 06 (title), 07 (title)"
+```
+
+### Flow for `rloop task add --title "..." --body "..."`
+
+```
+1. Parse CLI args (read body from stdin if --body absent)
 2. Generate next task ID
-3. Build raw task content (frontmatter + description)
-4. If enhance:
-   a. Build enhancement prompt with raw description
-   b. Call run_query(prompt, Sonnet)
-   c. Extract title from first # heading (if no --title given)
-   d. Replace description body with enhanced version
-5. Write task file
-6. git add + commit
-7. Print summary (including cost if enhanced)
-```
-
-### Flow for `rloop task refine <id>`
-
-```
-1. Load existing task file
-2. Build enhancement prompt with current description
-3. Call run_query(prompt, Sonnet)
-4. Extract title (if current title is empty)
-5. Write updated task file (preserve frontmatter, replace body)
-6. git add + commit
-7. Print summary
+3. Build frontmatter + body
+4. Write task file
+5. git add + commit
+6. Print: "Created task 05: {title}"
 ```
 
 ---
 
-## 6. Trade-off Summary
+## 6. Trade-off Summary — REVISED
 
-| Approach | Latency | Cost | User Control | Complexity |
-|----------|---------|------|--------------|------------|
-| `--enhance` flag (opt-in) | +5-15s when used | ~$0.001-0.005/task | High | Low |
-| Config default (opt-out) | +5-15s always | Adds up over many tasks | Medium | Low |
-| Separate `refine` command | No change to `new` | On demand | High | Medium |
-| Interactive draft-confirm | +5-15s + user time | Same | Highest | High |
-| No enhancement | None | None | N/A | None |
+The two-command approach eliminates the trade-off matrix from the original design:
 
-### Recommended v1 Scope
+| Command | LLM | Latency | Cost | Use Case |
+|---------|-----|---------|------|----------|
+| `rloop task new` | Always | 5-30s (tools + LLM) | ~$0.01-0.05 | Human creates tasks from rough ideas |
+| `rloop task add` | Never | Instant | $0 | Agents/scripts create tasks programmatically |
 
-1. `rloop::query::run_query()` — shared lightweight query function
-2. `--enhance` flag on `rloop task new` — opt-in enhancement
-3. `rloop task refine <id>` — enhance existing tasks
-4. Config `[task]` section with `auto_enhance` and `enhance_model`
-5. Sonnet as default enhancement model (fast, cheap, good at writing)
-6. Hardcoded system prompt with 2-3 curated examples
-7. Title auto-generation from the `# Heading` convention
+### v1 Scope
+
+1. `rloop::query::run_query()` — shared query function with generic structured output
+2. `rloop task new "idea"` — human workflow, always LLM, multi-task, dep inference
+3. `rloop task add --title "..." --body "..."` — programmatic workflow, no LLM
+4. Config `[task]` section with `enhance_model` (default Sonnet)
+5. Enhancement LLM gets Read/Glob/Grep tools and project settings
+6. Structured output via schemars for task array parsing
+7. Full event logging for all LLM interactions (same detail as execute_step)
 
 ---
 
-## 7. Open Questions
+## 7. Open Questions — RESOLVED
 
-### Must Resolve Before Implementation
+### CLI Design — REVISED
 
-1. **Opt-in or opt-out?** Should `auto_enhance` default to `false` (opt-in) or `true` (opt-out)? Recommendation: `false` — users should explicitly choose to spend tokens. They can flip it in config once they see the value.
+The original research proposed `--enhance` flag + `rloop task refine`. After discussion, the design was fundamentally revised:
 
-2. **Enhancement model?** Sonnet is the sweet spot (fast, cheap, good writing). Haiku is too terse for task writing. Opus is overkill and slow for a text rewrite. Allow override via config and `--model` flag.
+**Two commands, clear separation of intent:**
 
-3. **Should enhancement generate verification commands?** Probably not — verification commands require understanding the project's build system and test framework. The user is better positioned to specify these. The LLM could suggest them in a comment, but auto-generating them risks broken commands.
+- **`rloop task new "rough idea"`** — Human workflow. Always runs LLM. Loads CLAUDE.md (via project settings) + all existing task summaries. Can create **multiple tasks** with inferred dependencies. Uses structured output (`EnhancedTasks` schema). Gets Read/Glob/Grep tools for codebase exploration. This is a task planning command, not just a text rewrite.
 
-4. **Should enhancement infer dependencies?** No — dependency inference requires understanding the full task DAG and what each task does. This is a fundamentally different problem (task planning) and should not be conflated with text enhancement.
+- **`rloop task add --title "..." --body "..."`** — Programmatic/agent workflow. No LLM. Takes explicit fields. Supports stdin for body (if `--body` not provided). Fast, deterministic, zero cost.
 
-5. **What happens if the LLM query fails?** Fall back to the raw description. Print a warning ("enhancement failed, using original description"). Never block task creation on an LLM failure.
+No `rloop task refine` for now. No `auto_enhance` config. No `--enhance`/`--no-enhance` flags. The two commands have clear, non-overlapping purposes.
 
-### Worth Discussing
+### Resolved Questions
 
-6. **Should `refine` overwrite or create a new version?** Overwrite in place (same file, same ID). The user can always `git diff` to see what changed. Version tracking is what git is for.
+1. **Opt-in or opt-out?** → N/A. `new` always enhances. `add` never does. No flag needed.
 
-7. **Should enhancement read the codebase?** No tools for v1. The enhancement is purely a text rewrite — improve structure, add acceptance criteria, clarify language. Codebase-aware enhancement (reading files to add specific paths and types) would require tools and a larger context, making it slower and more expensive. Consider this as a future "deep enhance" mode.
+2. **Enhancement model?** → **Sonnet default**, configurable via `[task] enhance_model` in config.toml. Overridable per-invocation with `--model`. Even with CLAUDE.md context and codebase tools, Sonnet is sufficient for task structuring.
 
-8. **Should the prompt include the project's CLAUDE.md?** Maybe — it contains coding conventions that could inform acceptance criteria. But it adds tokens and the enhancement prompt should be self-contained. Worth testing.
+3. **Should enhancement generate verification commands?** → **No.** Verification commands come from the human via `--verification`. The LLM should not guess build system commands.
 
-9. **How does this interact with the create-rloop-tasks skill?** The PRD mentions a `.claude/skills/create-rloop-tasks/SKILL.md` skill for task creation from Claude Code. Enhancement via `--enhance` is the CLI equivalent — both produce well-structured tasks, but `--enhance` works from the rloop CLI without needing a Claude Code session. They serve different workflows and don't conflict.
+4. **Should enhancement infer dependencies?** → **Yes.** Since `new` loads all existing tasks, it can and should infer `depends_on` for the tasks it creates. This was revised from the original "no" recommendation once the command was scoped as a planning tool rather than a text rewrite.
 
-10. **Should `rloop task refine` work on completed tasks?** Yes — you might want to refine a task's description for documentation purposes even after it's done. The `completed` field stays unchanged.
+5. **What happens if the LLM query fails?** → **Fail the command.** Print error, exit, create no files. Since `new` always requires LLM, there's no meaningful raw fallback. User retries. (For the raw/programmatic path, use `add`.)
+
+6. **Should `refine` overwrite or create a new version?** → N/A. No `refine` command for now.
+
+7. **Should enhancement read the codebase?** → **Yes.** `new` gets Read, Glob, Grep tools so the LLM can explore the codebase and write more specific tasks (referencing real paths, types, function names).
+
+8. **Should the prompt include CLAUDE.md?** → **Yes, via project settings.** `setting_sources` matches whatever the step executor uses (project-level). CLAUDE.md loads automatically through the SDK.
+
+9. **How does this interact with the create-rloop-tasks skill?** → They serve different workflows. `rloop task new` works from the rloop CLI. The skill works from a Claude Code session. They don't conflict.
+
+10. **Should `rloop task refine` work on completed tasks?** → N/A. No `refine` for now.
+
+### Additional Decisions
+
+11. **Streaming:** Non-streaming. `run_query` runs silently and returns the result. But all events (messages, tool calls, token usage) are logged with the same detail as `execute_step` for full history.
+
+12. **Structured output:** `run_query` supports generic structured output via `QueryConfig.output_format: Option<serde_json::Value>`. Callers pass `schemars::schema_for!(TheirType)`. Task enhancement uses `EnhancedTasks { tasks: Vec<EnhancedTask> }`. LLM verification (research 03) will use `LlmVerificationResult`. Generic by design.
+
+13. **Stdin for `add`:** `rloop task add` reads body from stdin if `--body` is not provided. Title and deps are always flags.

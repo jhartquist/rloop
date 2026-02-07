@@ -656,7 +656,7 @@ No special handling needed in rloop.
 
 ---
 
-## 11. Open Questions
+## 11. Open Questions — RESOLVED
 
 ### 11.1 Does the Rust SDK expose message IDs?
 
@@ -664,94 +664,51 @@ The `Message::Assistant` type in `claude-agent-sdk-rs` may or may not include th
 
 **Impact:** Affects `TokenAccumulator` deduplication (Section 8.2) and `ContextTracker` updates.
 
+**Decision:** Investigate the SDK source and analyze local session log data to understand the exact accumulation pattern of intermediate usage values vs the final Result message. Build the deduplication strategy based on findings.
+
 ### 11.2 Does the Rust SDK's `Message::Assistant.usage` include cache breakdown?
 
-The current code in `step.rs` accesses `m.message.usage` as a `serde_json::Value`. We extract `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`. Need to verify these fields are actually present on per-message usage (not just the Result message).
-
-**From session log data:** Yes, they are. The session log shows `cache_creation_input_tokens` and `cache_read_input_tokens` on every assistant message.
+**From session log data:** Yes, they are. The session log shows `cache_creation_input_tokens` and `cache_read_input_tokens` on every assistant message. **Resolved — confirmed present.**
 
 ### 11.3 Should we include `output_tokens` in the context percentage formula?
 
-**Arguments for:**
-- Output tokens genuinely consume context window during generation
-- The model cannot generate beyond `context_window - input_tokens`
-- After the turn, output becomes input for the next turn
-
-**Arguments against:**
-- `input_tokens` on the *next* turn will already include this turn's output
-- Double-counting in a sense: the output "uses" context during this turn, then again as input next turn
-- Claude Code's formula (from codelynx.dev analysis) appears to use `input + cache_read + cache_create` without `output`
-
-**Resolution:** This is a question of "what do we mean by context usage?"
-
-- **"How full is the context right now?"** → Include output. During generation, the context window holds input + output. This is the number that determines whether the model can continue.
-- **"How much of the context window is conversation history?"** → Exclude output. The input side is what's accumulated; output is ephemeral until it becomes next turn's input.
-
-**Recommendation:** Include output tokens. This gives the most conservative (safest) estimate. When the agent asks "how much room do I have?", telling it the context including current output is more useful than telling it about input only. If context is at 80% including output, the agent knows it has ~40K tokens left, which accounts for the space needed for its next response.
+**Decision: Yes, include output tokens.** Conservative/safe estimate. Formula: `(input + cache_read + cache_create + output) / 200K`. The agent needs to know how much room it actually has, including its current response.
 
 ### 11.4 What cache TTL does Claude Code use?
 
-The session log shows `cache_creation.ephemeral_1h_input_tokens: 16303`, indicating 1-hour cache TTL. This affects cost breakdown calculations (2.0x vs 1.25x base input price).
-
-**Impact:** If we add cost breakdown, we need to know the TTL to apply the right multiplier. Options:
-- Check `cache_creation.ephemeral_1h_input_tokens` vs `ephemeral_5m_input_tokens` in usage data
-- Default to 1-hour (what the SDK seems to use)
-- Ignore and approximate (difference is modest)
+**Decision: Punt.** We are skipping cost breakdown entirely — SDK's `total_cost_usd` is sufficient. No price table, no per-token-type breakdown. This question is moot.
 
 ### 11.5 Should we warn the agent at specific thresholds?
 
-Options:
-1. **Agent self-manages** — calls `context_usage` when it wants to know. No unsolicited warnings.
-2. **System warns via tool result** — append context warnings to tool results at thresholds.
-3. **Inject system messages** — add context warnings into the conversation. Not possible through the SDK.
-
-**Recommendation:** Agent self-manages (option 1). The agent prompt already instructs it to call `context_usage`. Adding unsolicited warnings would complicate the message flow and the agent already has built-in context awareness on newer models (Sonnet 4.5, Haiku 4.5).
+**Decision: Agent self-manages.** No injected warnings. The agent calls `context_usage` when it wants. Sonnet 4.5 and Haiku 4.5 already get built-in API warnings (`<system_warning>Token usage: X/200000</system_warning>`). Opus 4.6 does not have this yet but is expected to gain it. Threshold-crossing events are still printed to the terminal for the human watching.
 
 ### 11.6 How does the `compute_context_usage` call flow work today?
 
-Currently `compute_context_usage` is called from `extract_result_usage`, which is only called when processing the `Message::Result`. This means context percentage is only computed once, at the very end of the step. By then it's useless — the step is over.
-
-**Fix:** Call context tracking updates from `Message::Assistant` processing, not from `Message::Result`. The Result message is used for final cumulative billing totals; context tracking should happen in real-time during the stream.
+**Fix confirmed:** Move context tracking to `Message::Assistant` processing. The Result message is for final billing totals only.
 
 ### 11.7 Should we store context percentage in `StepResult`?
 
-Currently `StepResult` has token counts but no context percentage. Adding `peak_context_percentage: f32` would be useful for post-hoc analysis of which tasks are context-heavy.
-
-```rust
-pub struct StepResult {
-    // ... existing fields ...
-    /// Peak context window utilization during this step (0.0 - 100.0).
-    pub peak_context_pct: f32,
-}
-```
-
-Track the maximum across all turns and report it.
+**Decision: No.** Skip `peak_context_pct`. Context events are already logged — derive from session logs if needed. Keeps `StepResult` simpler.
 
 ---
 
 ## 12. Implementation Plan
 
-### Phase 1: Accurate Context Tracking (Minimum Viable)
+### Phase 1: SDK Investigation
+
+1. Investigate whether `Message::Assistant` exposes message ID in the Rust SDK
+2. Analyze local session log data to understand intermediate vs cumulative usage patterns
+3. Determine deduplication strategy based on findings
+
+### Phase 2: Accurate Context Tracking
 
 1. Add `ContextTracker` to `step.rs` — tracks last assistant message's usage
 2. Add `context_percentage: Arc<AtomicU32>` to `ToolState` in `tools.rs`
 3. Wire `build_context_usage_tool` to read from the atomic
 4. Update `process_stream` to update the context tracker after each assistant message
 5. Update the atomic after each context tracker update
-6. Remove or fix `compute_context_usage` (stop calling it from Result message; or keep for final logging)
+6. Fix `compute_context_usage` — use last-message values, not cumulative sums
+7. Add deduplication to `TokenAccumulator` and `ContextTracker` (based on Phase 1 findings)
+8. Add threshold-crossing `ContextUsage` events to terminal output
 
-### Phase 2: Deduplication + Accuracy
-
-1. Investigate whether `Message::Assistant` exposes message ID in the Rust SDK
-2. Add deduplication to `TokenAccumulator` and `ContextTracker`
-3. Add `peak_context_pct` to `StepResult`
-4. Add threshold-crossing `ContextUsage` events to terminal output
-
-### Phase 3: Cost Breakdown
-
-1. Add price table to `model.rs`
-2. Add cost breakdown to `SessionSummary` event
-3. Add per-category cost fields to `StepResult` or create a `CostBreakdown` struct
-4. Update terminal display to show breakdown
-
-Each phase is independent and shippable.
+Cost breakdown is explicitly out of scope — SDK's `total_cost_usd` is sufficient.
