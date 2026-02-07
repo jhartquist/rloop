@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,17 @@ fn format_duration(d: std::time::Duration) -> String {
     }
 }
 
+/// Format elapsed time with `+` prefix and right-align to 8 characters.
+fn format_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let time_str = if secs >= 60 {
+        format!("+{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("+{secs}s")
+    };
+    format!("{time_str:>8}")
+}
+
 /// Format a token count with `k` suffix for thousands.
 fn format_tokens(n: u64) -> String {
     if n >= 1000 {
@@ -159,6 +171,7 @@ fn format_tokens(n: u64) -> String {
 pub struct SessionLogger {
     writer: BufWriter<File>,
     _session_id: SessionId,
+    start_time: Instant,
 }
 
 impl SessionLogger {
@@ -176,6 +189,7 @@ impl SessionLogger {
         Ok(Self {
             writer: BufWriter::new(file),
             _session_id: session_id,
+            start_time: Instant::now(),
         })
     }
 
@@ -191,12 +205,13 @@ impl SessionLogger {
     }
 
     /// Pretty-print an event to the terminal.
-    #[allow(clippy::unused_self, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     pub fn print(&self, event: &Event) {
+        let elapsed = format_elapsed(self.start_time.elapsed());
         match event {
             Event::SessionStarted { session_id, target } => {
                 eprintln!(
-                    "{} session {} targeting task {}",
+                    "{elapsed}  {} session {} targeting task {}",
                     "▶".green(),
                     session_id,
                     target
@@ -209,10 +224,10 @@ impl SessionLogger {
                 parent_branch,
                 session_branch,
             } => {
-                eprintln!("{} Session {session_id}", "▶".green());
-                eprintln!("  Date:   {datetime}");
-                eprintln!("  Target: task {target:02}");
-                eprintln!("  Branch: {parent_branch} → {session_branch}");
+                eprintln!("{elapsed}  {} Session {session_id}", "▶".green());
+                eprintln!("           Date:   {datetime}");
+                eprintln!("           Target: task {target:02}");
+                eprintln!("           Branch: {parent_branch} → {session_branch}");
             }
             Event::StepStarted {
                 task_id,
@@ -221,18 +236,18 @@ impl SessionLogger {
                 cc_session_id,
             } => {
                 eprintln!(
-                    "{} Task {task_id:02}  step {attempt}  model: {model_id}  cc: {cc_session_id}",
+                    "{elapsed}  {} Task {task_id:02}  step {attempt}  model: {model_id}  cc: {cc_session_id}",
                     "→".blue(),
                 );
             }
             Event::TaskStarted { task_id } => {
-                eprintln!("{} task {task_id}", "→".blue());
+                eprintln!("{elapsed}  {} task {task_id}", "→".blue());
             }
             Event::TaskCompleted { task_id, summary } => {
-                eprintln!("{} task {task_id} — {summary}", "✓".green());
+                eprintln!("{elapsed}  {} task {task_id} — {summary}", "✓".green());
             }
             Event::TaskFailed { task_id, reason } => {
-                eprintln!("{} task {task_id} — {reason}", "✗".red());
+                eprintln!("{elapsed}  {} task {task_id} — {reason}", "✗".red());
             }
             Event::VerificationRan {
                 task_id,
@@ -242,56 +257,56 @@ impl SessionLogger {
             } => {
                 let icon = if *passed { "✓".green() } else { "✗".red() };
                 let status = if *passed { "passed" } else { "failed" };
-                eprintln!("{icon} verify task {task_id} `{command}`: {status}");
+                eprintln!("{elapsed}  {icon} verify task {task_id} `{command}`: {status}");
                 if !passed {
-                    eprintln!("  {output}");
+                    eprintln!("           {output}");
                 }
             }
             Event::WorktreeCreated { task_id, path } => {
-                eprintln!("  worktree {task_id} → {}", path.display());
+                eprintln!("{elapsed}    worktree {task_id} → {}", path.display());
             }
             Event::WorktreeMerged {
                 task_id,
                 into_branch,
             } => {
-                eprintln!("  merged {task_id} → {into_branch}");
+                eprintln!("{elapsed}    merged {task_id} → {into_branch}");
             }
             Event::WorktreeCleanedUp { task_id } => {
-                eprintln!("  cleaned up {task_id}");
+                eprintln!("{elapsed}    cleaned up {task_id}");
             }
             Event::SessionComplete { branch } => {
-                eprintln!("{} session complete → branch {branch}", "■".green());
+                eprintln!("{elapsed}  {} session complete → branch {branch}", "■".green());
             }
             Event::SessionAutoMerged {
                 branch,
                 into_branch,
             } => {
-                eprintln!("{} auto-merged {branch} → {into_branch}", "■".green());
+                eprintln!("{elapsed}  {} auto-merged {branch} → {into_branch}", "■".green());
             }
             Event::SessionCancelled => {
-                eprintln!("{} session cancelled", "■".yellow());
+                eprintln!("{elapsed}  {} session cancelled", "■".yellow());
             }
             Event::AssistantMessage { content } => {
-                eprintln!("{content}");
+                eprintln!("{elapsed}  {content}");
             }
             Event::PromptSent { task_id } => {
-                eprintln!("  prompt → task {task_id}");
+                eprintln!("{elapsed}    prompt → task {task_id}");
             }
             Event::ToolCall { name, .. } => {
-                eprintln!("  tool: {name}");
+                eprintln!("{elapsed}    tool: {name}");
             }
             Event::ToolResult { name, .. } => {
-                eprintln!("  result: {name}");
+                eprintln!("{elapsed}    result: {name}");
             }
             Event::TokenUsage {
                 input_tokens,
                 output_tokens,
                 ..
             } => {
-                eprintln!("  tokens: {input_tokens} in / {output_tokens} out");
+                eprintln!("{elapsed}    tokens: {input_tokens} in / {output_tokens} out");
             }
             Event::ContextUsage { percentage, .. } => {
-                eprintln!("  context: {percentage:.1}%");
+                eprintln!("{elapsed}    context: {percentage:.1}%");
             }
             Event::StepSummary {
                 task_id,
@@ -303,7 +318,7 @@ impl SessionLogger {
                 output_tokens,
             } => {
                 eprintln!(
-                    "  {} step {step_number}/{max_steps}  {}  ${cost_usd:.2}  tokens: {} in / {} out",
+                    "{elapsed}    {} step {step_number}/{max_steps}  {}  ${cost_usd:.2}  tokens: {} in / {} out",
                     format!("task {task_id}").dimmed(),
                     format_duration(*duration),
                     format_tokens(*input_tokens),
@@ -325,7 +340,7 @@ impl SessionLogger {
                     "failed".red().to_string()
                 };
                 eprintln!(
-                    "{} task {task_id:02}  {status}  {}  ${cost_usd:.2}  tokens: {} in / {} out  ({steps} step{})",
+                    "{elapsed}  {} task {task_id:02}  {status}  {}  ${cost_usd:.2}  tokens: {} in / {} out  ({steps} step{})",
                     "─".dimmed(),
                     format_duration(*duration),
                     format_tokens(*input_tokens),
@@ -343,11 +358,11 @@ impl SessionLogger {
                 cache_creation_tokens,
             } => {
                 eprintln!(
-                    "  Duration: {}  Cost: ${cost_usd:.2}",
+                    "{elapsed}    Duration: {}  Cost: ${cost_usd:.2}",
                     format_duration(*duration),
                 );
                 eprintln!(
-                    "  Tokens: {} in / {} out / {} cache-read / {} cache-create",
+                    "             Tokens: {} in / {} out / {} cache-read / {} cache-create",
                     format_tokens(*input_tokens),
                     format_tokens(*output_tokens),
                     format_tokens(*cache_read_tokens),
@@ -1372,5 +1387,43 @@ mod tests {
         assert!(
             matches!(&events[0], Event::StepStarted { task_id, attempt, .. } if *task_id == TaskId(3) && *attempt == 1)
         );
+    }
+
+    #[test]
+    fn format_elapsed_seconds() {
+        let d = std::time::Duration::from_secs(5);
+        let result = format_elapsed(d);
+        assert_eq!(result, "     +5s");
+    }
+
+    #[test]
+    fn format_elapsed_minutes() {
+        let d = std::time::Duration::from_secs(94); // 1m 34s
+        let result = format_elapsed(d);
+        assert_eq!(result, " +1m 34s"); // 8 chars with leading space
+    }
+
+    #[test]
+    fn format_elapsed_zero() {
+        let d = std::time::Duration::from_secs(0);
+        let result = format_elapsed(d);
+        assert_eq!(result, "     +0s");
+    }
+
+    #[test]
+    fn format_elapsed_right_aligned() {
+        // Verify all outputs are exactly 8 characters
+        let cases = vec![
+            std::time::Duration::from_secs(0),
+            std::time::Duration::from_secs(9),
+            std::time::Duration::from_secs(59),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(94),
+            std::time::Duration::from_secs(600),
+        ];
+        for d in cases {
+            let result = format_elapsed(d);
+            assert_eq!(result.len(), 8, "elapsed time must be 8 chars: {:?}", result);
+        }
     }
 }
