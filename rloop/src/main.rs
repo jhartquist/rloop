@@ -52,6 +52,11 @@ enum TaskAction {
         #[arg(long)]
         verification: Vec<String>,
     },
+    /// Show full details of a task
+    Show {
+        /// Task ID to show (e.g., 3 for task 03)
+        id: u32,
+    },
 }
 
 /// Wrapper for Model CLI parsing (case-insensitive display in help).
@@ -112,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
                 &depends_on,
                 &verification,
             ),
+            TaskAction::Show { id } => cmd_task_show(id),
         },
     }
 }
@@ -296,6 +302,59 @@ fn cmd_task_new(
     std::fs::write(&path, content)?;
 
     eprintln!("Created task {next_id:02} at {}", path.display());
+    Ok(())
+}
+
+fn cmd_task_show(id: u32) -> anyhow::Result<()> {
+    let repo = std::env::current_dir()?;
+    let tasks_dir = repo.join(".rloop").join("tasks");
+
+    if !tasks_dir.exists() {
+        anyhow::bail!("No .rloop/tasks/ directory found. Run `rloop init` first.");
+    }
+
+    let target = rloop::task::TaskId(id);
+    let task_path = tasks_dir.join(format!("{target}.md"));
+
+    let task = rloop::task::load_task(&task_path)
+        .map_err(|_| anyhow::anyhow!("task {target} not found"))?;
+
+    // Header: Task ID and title
+    if task.title.is_empty() {
+        println!("Task {}", task.id);
+    } else {
+        println!("Task {}: {}", task.id, task.title);
+    }
+    println!();
+
+    // Frontmatter fields
+    let status = if task.completed {
+        "completed"
+    } else {
+        "incomplete"
+    };
+    println!("Status:     {status}");
+    println!("Model:      {}", task.model);
+
+    if task.depends_on.is_empty() {
+        println!("Depends on: (none)");
+    } else {
+        let deps: Vec<String> = task.depends_on.iter().map(ToString::to_string).collect();
+        println!("Depends on: {}", deps.join(", "));
+    }
+
+    if let Some(ref cmds) = task.verification {
+        println!("Verify:     {}", cmds.0.join("; "));
+    } else {
+        println!("Verify:     (none)");
+    }
+
+    // Separator and full description
+    println!();
+    println!("---");
+    println!();
+    print!("{}", task.description);
+
     Ok(())
 }
 
