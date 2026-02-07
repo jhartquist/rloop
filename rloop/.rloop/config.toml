@@ -1,0 +1,5 @@
+[step]
+model = "Opus"
+max_turns = 50
+max_retries = 10
+timeout_seconds = 300
