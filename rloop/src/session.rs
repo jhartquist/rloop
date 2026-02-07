@@ -1,19 +1,26 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::Config;
 use crate::git::{
-    self, Worktree, cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree,
+    self, Worktree, cleanup_worktree, cleanup_worktree_preserve_branch, create_worktree,
+    fast_forward_ref, lock_worktree, rebase, rebase_abort,
 };
 use crate::lock::SessionLock;
 use crate::log::{Event, EventSender, SessionLogger, spawn_logger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome, StepResult};
-use crate::task::{Task, TaskId, load_all_tasks, mark_completed, resolve_all_dag, resolve_dag};
+use crate::task::{
+    Task, TaskId, find_ready_tasks, load_all_tasks, mark_completed, resolve_all_dag, resolve_dag,
+};
 
 /// Unique identifier for a session (one invocation of rloop).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -80,51 +87,135 @@ struct DagResult {
     metrics: SessionMetrics,
 }
 
-/// Execute tasks in DAG order, accumulating metrics.
+/// Outcome of a single task's execution phase (before merge).
+struct ExecutionResult {
+    task_id: TaskId,
+    worktree: Worktree,
+    outcome: TaskOutcome,
+}
+
+/// Execute tasks in DAG order with parallel scheduling.
+///
+/// Uses `FuturesUnordered` with a semaphore to run up to `max_parallel` tasks
+/// concurrently. Merges are serialized via a tokio mutex: rebase-then-fast-forward.
+/// With `max_parallel=1`, this degenerates to sequential execution.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn execute_dag<E: StepExecutor>(
     repo: &Path,
     tasks: &[Task],
     steps: &[TaskId],
     session_branch: &str,
+    parent_branch: &str,
     config: &Config,
     logger: &EventSender,
     executor: &E,
 ) -> anyhow::Result<DagResult> {
-    let task_by_id = |id: TaskId| -> Option<&Task> { tasks.iter().find(|t| t.id == id) };
-
     let session_start = Instant::now();
     let mut completed_tasks: Vec<TaskId> = Vec::new();
     let mut failed_tasks: Vec<TaskId> = Vec::new();
     let mut skipped_tasks: Vec<TaskId> = Vec::new();
+    let mut completed_set: HashSet<TaskId> = HashSet::new();
     let mut failed_set: HashSet<TaskId> = HashSet::new();
+    let mut in_flight: HashSet<TaskId> = HashSet::new();
     let mut metrics = SessionMetrics::default();
 
-    for &task_id in steps {
-        let task = task_by_id(task_id)
-            .with_context(|| format!("task {task_id} in plan but not loaded"))?;
-
+    // Pre-populate completed_set with tasks already marked completed
+    for task in tasks {
         if task.completed {
-            continue;
+            completed_set.insert(task.id);
         }
+    }
 
-        let blocked = task.depends_on.iter().any(|dep| failed_set.contains(dep));
-        if blocked {
-            skipped_tasks.push(task_id);
-            emit(
-                logger,
-                Event::TaskFailed {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_parallel));
+    let merge_mutex = Arc::new(TokioMutex::new(()));
+    let mut futures: FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ExecutionResult>> + Send>>,
+    > = FuturesUnordered::new();
+
+    loop {
+        // Fill the frontier up to max_parallel
+        let ready = find_ready_tasks(tasks, steps, &completed_set, &failed_set, &in_flight);
+        for task_id in ready {
+            if in_flight.len() >= config.max_parallel {
+                break;
+            }
+
+            let task = tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .with_context(|| format!("task {task_id} in plan but not loaded"))?;
+
+            in_flight.insert(task_id);
+
+            // Clone/copy what the spawned future needs
+            let sem = Arc::clone(&semaphore);
+            let repo = repo.to_path_buf();
+            let task_id = task.id;
+            let task_model = task.model;
+            let task_depends_on = task.depends_on.clone();
+            let task_verification = task.verification.clone();
+            let task_completed = task.completed;
+            let task_description = task.description.clone();
+            let task_source_path = task.source_path.clone();
+            let task_title = task.title.clone();
+            let session_branch = session_branch.to_string();
+            let config = config.clone();
+            let logger = logger.clone();
+
+            futures.push(Box::pin(async move {
+                // Acquire semaphore permit (controls concurrency)
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
+
+                // Reconstruct task for the future
+                let task = Task {
+                    id: task_id,
+                    title: task_title,
+                    model: task_model,
+                    depends_on: task_depends_on,
+                    verification: task_verification,
+                    completed: task_completed,
+                    description: task_description,
+                    source_path: task_source_path,
+                };
+
+                let (worktree, outcome) = execute_task_in_worktree(
+                    &repo,
+                    &task,
+                    &session_branch,
+                    &config,
+                    &logger,
+                    &StepExecutorRef(std::ptr::from_ref::<E>(executor)),
+                )
+                .await?;
+
+                Ok(ExecutionResult {
                     task_id,
-                    reason: "blocked by failed dependency".to_string(),
-                },
-            );
-            failed_set.insert(task_id);
-            continue;
+                    worktree,
+                    outcome,
+                })
+            }));
         }
 
-        let outcome = execute_task(repo, task, session_branch, config, logger, executor).await?;
+        // If nothing in-flight and no more ready tasks, we're done
+        if futures.is_empty() {
+            break;
+        }
 
-        match outcome {
-            TaskOutcome::Success(ref tm) | TaskOutcome::Failed(ref tm) => {
+        // Await the next completion
+        let result = futures
+            .next()
+            .await
+            .expect("futures should not be empty")?;
+
+        let task_id = result.task_id;
+        in_flight.remove(&task_id);
+
+        // Accumulate metrics
+        match &result.outcome {
+            TaskOutcome::Success(tm) | TaskOutcome::Failed(tm) => {
                 metrics.cost_usd += tm.cost_usd;
                 metrics.input_tokens += tm.input_tokens;
                 metrics.output_tokens += tm.output_tokens;
@@ -132,14 +223,98 @@ async fn execute_dag<E: StepExecutor>(
                 metrics.cache_creation_tokens += tm.cache_creation_tokens;
             }
         }
-        match outcome {
-            TaskOutcome::Success(_) => completed_tasks.push(task_id),
+
+        match result.outcome {
+            TaskOutcome::Success(_) => {
+                // Remove the worktree directory but keep the branch — can't rebase
+                // a branch that's checked out in a worktree.
+                cleanup_worktree_preserve_branch(repo, &result.worktree).with_context(|| {
+                    format!("failed to cleanup worktree for task {task_id}")
+                })?;
+                emit(logger, Event::WorktreeCleanedUp { task_id });
+
+                // Serialize merge via mutex
+                let _guard = merge_mutex.lock().await;
+                let merge_result = merge_task_into_session(
+                    repo,
+                    &result.worktree.branch,
+                    session_branch,
+                    parent_branch,
+                    task_id,
+                    logger,
+                );
+
+                match merge_result {
+                    Ok(()) => {
+                        // Clean up the branch now that it's merged
+                        if let Err(e) =
+                            git::git(repo, &["branch", "-D", &result.worktree.branch])
+                        {
+                            eprintln!(
+                                "warning: failed to delete branch {}: {e}",
+                                result.worktree.branch
+                            );
+                        }
+                        completed_tasks.push(task_id);
+                        completed_set.insert(task_id);
+                    }
+                    Err(merge_err) => {
+                        let reason = format!("{merge_err:#}");
+                        emit(
+                            logger,
+                            Event::MergeFailed {
+                                task_id,
+                                branch: result.worktree.branch.clone(),
+                                reason: reason.clone(),
+                            },
+                        );
+                        emit(
+                            logger,
+                            Event::TaskFailed {
+                                task_id,
+                                reason: format!("merge failed: {reason}"),
+                            },
+                        );
+                        // Branch is already preserved (worktree removed above)
+                        failed_tasks.push(task_id);
+                        failed_set.insert(task_id);
+                    }
+                }
+            }
             TaskOutcome::Failed(_) => {
+                cleanup_worktree(repo, &result.worktree)
+                    .with_context(|| format!("failed to cleanup worktree for failed task {task_id}"))?;
+                emit(logger, Event::WorktreeCleanedUp { task_id });
                 failed_tasks.push(task_id);
                 failed_set.insert(task_id);
             }
         }
+
+        // Check for newly-skipped tasks (dependents of failed tasks)
+        for &step_id in steps {
+            if completed_set.contains(&step_id)
+                || failed_set.contains(&step_id)
+                || in_flight.contains(&step_id)
+            {
+                continue;
+            }
+            let task = tasks.iter().find(|t| t.id == step_id);
+            if let Some(task) = task
+                && task.depends_on.iter().any(|dep| failed_set.contains(dep))
+            {
+                skipped_tasks.push(step_id);
+                emit(
+                    logger,
+                    Event::TaskFailed {
+                        task_id: step_id,
+                        reason: "blocked by failed dependency".to_string(),
+                    },
+                );
+                failed_set.insert(step_id);
+            }
+        }
     }
+
     metrics.duration = session_start.elapsed();
 
     Ok(DagResult {
@@ -148,6 +323,25 @@ async fn execute_dag<E: StepExecutor>(
         skipped_tasks,
         metrics,
     })
+}
+
+/// Wrapper to smuggle an executor reference across the Send boundary.
+///
+/// The executor outlives the spawned future since `execute_dag` awaits all
+/// futures before returning. The raw pointer is sound because:
+/// - The executor is borrowed for the entire lifetime of `execute_dag`
+/// - All futures are awaited within `execute_dag` before it returns
+/// - `StepExecutor` requires `Send + Sync`
+struct StepExecutorRef<E>(*const E);
+unsafe impl<E: Send + Sync> Send for StepExecutorRef<E> {}
+unsafe impl<E: Send + Sync> Sync for StepExecutorRef<E> {}
+
+impl<E: StepExecutor> StepExecutorRef<E> {
+    /// # Safety
+    /// The caller must ensure the pointed-to executor outlives this reference.
+    unsafe fn get(&self) -> &E {
+        unsafe { &*self.0 }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,15 +377,16 @@ enum TaskOutcome {
     Failed(TaskMetrics),
 }
 
-/// Execute a single task: create worktree, run agent with retries, merge or cleanup.
-async fn execute_task<E: StepExecutor>(
+/// Execute a single task in a worktree without merging. Returns the worktree
+/// and outcome so the caller can serialize merges.
+async fn execute_task_in_worktree<E: StepExecutor>(
     repo: &Path,
     task: &Task,
     session_branch: &str,
     config: &Config,
     logger: &EventSender,
-    executor: &E,
-) -> anyhow::Result<TaskOutcome> {
+    executor_ref: &StepExecutorRef<E>,
+) -> anyhow::Result<(Worktree, TaskOutcome)> {
     let task_id = task.id;
     let task_start = Instant::now();
 
@@ -214,6 +409,9 @@ async fn execute_task<E: StepExecutor>(
         eprintln!("warning: failed to lock worktree for task {task_id}: {e}");
     }
 
+    // SAFETY: executor outlives this call — execute_dag awaits all futures before returning
+    let executor = unsafe { executor_ref.get() };
+
     // Execute with retries
     let (summary, mut task_metrics) =
         run_with_retries(task, &worktree, config, logger, executor).await?;
@@ -235,12 +433,72 @@ async fn execute_task<E: StepExecutor>(
     );
 
     if let Some(summary) = summary {
-        finish_successful_task(repo, &worktree, session_branch, task_id, &summary, logger)?;
-        Ok(TaskOutcome::Success(task_metrics))
+        // Auto-commit worktree changes (but don't merge yet)
+        let task_file = worktree.path.join(format!(".rloop/tasks/{task_id:02}.md"));
+        mark_completed(&task_file)
+            .with_context(|| format!("failed to mark task {task_id} as completed"))?;
+
+        git::git(&worktree.path, &["add", "-A"])?;
+        let msg = format!("task {task_id:02}: {summary}");
+        git::git(&worktree.path, &["commit", "-m", &msg])?;
+
+        emit(
+            logger,
+            Event::TaskCompleted {
+                task_id,
+                summary,
+            },
+        );
+        Ok((worktree, TaskOutcome::Success(task_metrics)))
     } else {
-        finish_failed_task(repo, &worktree, task_id, logger)?;
-        Ok(TaskOutcome::Failed(task_metrics))
+        Ok((worktree, TaskOutcome::Failed(task_metrics)))
     }
+}
+
+/// Rebase the task branch onto the session branch, then fast-forward.
+///
+/// The worktree must already be removed before calling this — git can't
+/// rebase a branch that's checked out in a worktree.
+///
+/// Note: `git rebase` changes which branch is checked out in the main worktree.
+/// We save and restore the checked-out state afterward.
+fn merge_task_into_session(
+    repo: &Path,
+    task_branch: &str,
+    session_branch: &str,
+    parent_branch: &str,
+    task_id: TaskId,
+    logger: &EventSender,
+) -> anyhow::Result<()> {
+    // Rebase the task branch onto the session branch.
+    // `git rebase <onto> <branch>` checks out `branch` in the main worktree,
+    // so we must restore the parent branch afterward.
+    if let Err(e) = rebase(repo, task_branch, session_branch) {
+        // Rebase failed — abort and restore
+        if let Err(abort_err) = rebase_abort(repo) {
+            eprintln!("warning: failed to abort rebase for task {task_id}: {abort_err}");
+        }
+        let _ = git::git(repo, &["checkout", parent_branch]);
+        return Err(e);
+    }
+
+    // Fast-forward session branch to the rebased task branch
+    fast_forward_ref(repo, session_branch, task_branch)
+        .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
+
+    // Restore the main worktree to the parent branch
+    git::git(repo, &["checkout", parent_branch])
+        .with_context(|| format!("failed to restore {parent_branch} after merging task {task_id}"))?;
+
+    emit(
+        logger,
+        Event::WorktreeMerged {
+            task_id,
+            into_branch: session_branch.to_string(),
+        },
+    );
+
+    Ok(())
 }
 
 /// Retry loop: run `execute_step` up to `max_retries` times, accumulating learnings.
@@ -334,57 +592,6 @@ async fn run_with_retries<E: StepExecutor>(
     }
 }
 
-/// Auto-commit worktree changes, fast-forward the session branch, and clean up.
-fn finish_successful_task(
-    repo: &Path,
-    worktree: &Worktree,
-    session_branch: &str,
-    task_id: TaskId,
-    summary: &str,
-    logger: &EventSender,
-) -> anyhow::Result<()> {
-    // Mark the task as completed in the worktree's copy of the task file
-    let task_file = worktree.path.join(format!(".rloop/tasks/{task_id:02}.md"));
-    mark_completed(&task_file)
-        .with_context(|| format!("failed to mark task {task_id} as completed"))?;
-
-    // Commit the agent's changes + the completed-field update together
-    git::git(&worktree.path, &["add", "-A"])?;
-    let msg = format!("task {task_id:02}: {summary}");
-    git::git(&worktree.path, &["commit", "-m", &msg])?;
-
-    fast_forward_ref(repo, session_branch, &worktree.branch)
-        .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
-
-    emit(
-        logger,
-        Event::WorktreeMerged {
-            task_id,
-            into_branch: session_branch.to_string(),
-        },
-    );
-
-    cleanup_worktree(repo, worktree)
-        .with_context(|| format!("failed to cleanup worktree for task {task_id}"))?;
-
-    emit(logger, Event::WorktreeCleanedUp { task_id });
-    Ok(())
-}
-
-/// Clean up a failed task's worktree.
-fn finish_failed_task(
-    repo: &Path,
-    worktree: &Worktree,
-    task_id: TaskId,
-    logger: &EventSender,
-) -> anyhow::Result<()> {
-    cleanup_worktree(repo, worktree)
-        .with_context(|| format!("failed to cleanup worktree for failed task {task_id}"))?;
-
-    emit(logger, Event::WorktreeCleanedUp { task_id });
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Session orchestration
 // ---------------------------------------------------------------------------
@@ -466,6 +673,7 @@ pub async fn run_session_with<E: StepExecutor>(
         &tasks,
         &plan.steps,
         &session_branch,
+        &parent_branch,
         config,
         &logger,
         executor,
@@ -613,6 +821,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         &tasks,
         &plan.steps,
         &session_branch,
+        &parent_branch,
         config,
         &logger,
         executor,

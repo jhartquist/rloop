@@ -50,6 +50,13 @@ pub enum Event {
     WorktreeCleanedUp {
         task_id: TaskId,
     },
+    /// Task completed execution but its merge into the session branch failed.
+    /// The worktree branch is preserved for manual recovery.
+    MergeFailed {
+        task_id: TaskId,
+        branch: String,
+        reason: String,
+    },
     SessionComplete {
         branch: String,
     },
@@ -273,6 +280,16 @@ impl SessionLogger {
             }
             Event::WorktreeCleanedUp { task_id } => {
                 eprintln!("{elapsed}    cleaned up {task_id}");
+            }
+            Event::MergeFailed {
+                task_id,
+                branch,
+                reason,
+            } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id} merge failed — {reason}. Work preserved on branch {branch}",
+                    "✗".red()
+                );
             }
             Event::SessionComplete { branch } => {
                 eprintln!("{elapsed}  {} session complete → branch {branch}", "■".green());
@@ -739,6 +756,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn all_event_variants() -> Vec<Event> {
         vec![
             Event::SessionStarted {
@@ -783,6 +801,11 @@ mod tests {
                 into_branch: "main".into(),
             },
             Event::WorktreeCleanedUp { task_id: TaskId(8) },
+            Event::MergeFailed {
+                task_id: TaskId(9),
+                branch: "rloop-wt-09".into(),
+                reason: "conflict in src/main.rs".into(),
+            },
             Event::SessionComplete {
                 branch: "rloop/05".into(),
             },

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Model;
 
+#[derive(Clone)]
 pub struct Config {
     pub model: Model,
     pub max_turns: u32,
@@ -18,6 +19,7 @@ pub struct Config {
 }
 
 /// Configuration for `rloop task` subcommands.
+#[derive(Clone)]
 pub struct TaskConfig {
     /// Model used by `rloop task new` for the enhancement LLM query.
     pub enhance_model: Model,

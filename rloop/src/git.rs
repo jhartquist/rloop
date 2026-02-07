@@ -146,12 +146,56 @@ pub fn fast_forward_ref(repo: impl AsRef<Path>, branch: &str, to_ref: &str) -> a
     Ok(())
 }
 
+/// Rebase `branch` onto `onto`. Both must be valid refs.
+///
+/// Runs `git rebase <onto> <branch>` from the repo root.
+/// If the rebase has no conflicts, this is a no-op when `branch` is already
+/// a descendant of `onto`.
+///
+/// # Errors
+/// Returns an error if the rebase fails (typically a merge conflict).
+pub fn rebase(repo: impl AsRef<Path>, branch: &str, onto: &str) -> anyhow::Result<()> {
+    git(repo.as_ref(), &["rebase", onto, branch])
+        .with_context(|| format!("failed to rebase {branch} onto {onto}"))?;
+    Ok(())
+}
+
+/// Abort an in-progress rebase.
+///
+/// # Errors
+/// Returns an error if there is no rebase in progress or the abort fails.
+pub fn rebase_abort(repo: impl AsRef<Path>) -> anyhow::Result<()> {
+    git(repo.as_ref(), &["rebase", "--abort"]).context("failed to abort rebase")?;
+    Ok(())
+}
+
 /// Clean up a worktree: unlock (if locked), remove, and delete the branch.
 ///
 /// # Errors
 /// Returns an error if worktree removal or branch deletion commands fail.
 pub fn cleanup_worktree(repo: impl AsRef<Path>, worktree: &Worktree) -> anyhow::Result<()> {
-    let repo = repo.as_ref();
+    cleanup_worktree_impl(repo.as_ref(), worktree, false)
+}
+
+/// Clean up a worktree but preserve its branch (skip `git branch -D`).
+///
+/// Used when a task's merge fails — the branch is kept for manual recovery
+/// or a future merge-fix agent.
+///
+/// # Errors
+/// Returns an error if worktree removal fails.
+pub fn cleanup_worktree_preserve_branch(
+    repo: impl AsRef<Path>,
+    worktree: &Worktree,
+) -> anyhow::Result<()> {
+    cleanup_worktree_impl(repo.as_ref(), worktree, true)
+}
+
+fn cleanup_worktree_impl(
+    repo: &Path,
+    worktree: &Worktree,
+    preserve_branch: bool,
+) -> anyhow::Result<()> {
     let wt_path_str = worktree.path.to_str().context("non-UTF-8 worktree path")?;
 
     // Best-effort unlock — worktree may not be locked
@@ -162,8 +206,10 @@ pub fn cleanup_worktree(repo: impl AsRef<Path>, worktree: &Worktree) -> anyhow::
     git(repo, &["worktree", "remove", wt_path_str, "--force"])
         .with_context(|| format!("failed to remove worktree for task {}", worktree.task_id))?;
 
-    git(repo, &["branch", "-D", &worktree.branch])
-        .with_context(|| format!("failed to delete branch {}", worktree.branch))?;
+    if !preserve_branch {
+        git(repo, &["branch", "-D", &worktree.branch])
+            .with_context(|| format!("failed to delete branch {}", worktree.branch))?;
+    }
 
     Ok(())
 }

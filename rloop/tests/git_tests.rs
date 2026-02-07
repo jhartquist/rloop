@@ -1,8 +1,8 @@
 mod helpers;
 
 use rloop::git::{
-    assert_clean_worktree, assert_has_commits, cleanup_worktree, create_worktree, fast_forward_ref,
-    lock_worktree, unlock_worktree,
+    assert_clean_worktree, assert_has_commits, cleanup_worktree, cleanup_worktree_preserve_branch,
+    create_worktree, fast_forward_ref, lock_worktree, rebase, rebase_abort, unlock_worktree,
 };
 use rloop::task::TaskId;
 
@@ -210,4 +210,168 @@ fn assert_clean_worktree_dirty() {
     let repo = helpers::init_git_repo(dir.path());
     std::fs::write(repo.join("dirty.txt"), "uncommitted\n").unwrap();
     assert!(assert_clean_worktree(&repo).is_err());
+}
+
+// --- rebase tests ---
+
+fn git_run(args: &[&str], cwd: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn rebase_no_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+
+    // Create a branch and add a commit on it
+    git_run(&["branch", "feature"], &repo);
+    git_run(&["checkout", "feature"], &repo);
+    std::fs::write(repo.join("feature.txt"), "feature work\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "feature commit"], &repo);
+    git_run(&["checkout", "main"], &repo);
+
+    // Add a commit on main (so feature diverges)
+    std::fs::write(repo.join("main-change.txt"), "main work\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "main commit"], &repo);
+
+    // Rebase feature onto main
+    rebase(&repo, "feature", "main").unwrap();
+
+    // After rebase, feature should contain both files
+    git_run(&["checkout", "feature"], &repo);
+    assert!(repo.join("feature.txt").exists());
+    assert!(repo.join("main-change.txt").exists());
+
+    // Feature should be a descendant of main
+    let main_rev = git_run(&["rev-parse", "main"], &repo);
+    let merge_base = git_run(&["merge-base", "main", "feature"], &repo);
+    assert_eq!(merge_base, main_rev, "feature should be based on main after rebase");
+}
+
+#[test]
+fn rebase_conflict_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+
+    // Create a branch and modify README.md
+    git_run(&["branch", "feature"], &repo);
+    git_run(&["checkout", "feature"], &repo);
+    std::fs::write(repo.join("README.md"), "feature version\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "feature change README"], &repo);
+    git_run(&["checkout", "main"], &repo);
+
+    // Modify the same file on main to create a conflict
+    std::fs::write(repo.join("README.md"), "main version\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "main change README"], &repo);
+
+    // Rebase should fail due to conflict
+    let result = rebase(&repo, "feature", "main");
+    assert!(result.is_err(), "rebase should fail on conflict");
+}
+
+#[test]
+fn rebase_abort_after_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+
+    // Create conflicting branches
+    git_run(&["branch", "feature"], &repo);
+    git_run(&["checkout", "feature"], &repo);
+    std::fs::write(repo.join("README.md"), "feature version\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "feature change"], &repo);
+    git_run(&["checkout", "main"], &repo);
+
+    std::fs::write(repo.join("README.md"), "main version\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "main change"], &repo);
+
+    // Rebase fails
+    let _ = rebase(&repo, "feature", "main");
+
+    // Abort should succeed
+    rebase_abort(&repo).unwrap();
+
+    // After abort, the repo should be clean (on the rebasing branch)
+    // Checkout main to verify the repo is in a good state
+    git_run(&["checkout", "main"], &repo);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "main version\n"
+    );
+}
+
+#[test]
+fn rebase_noop_when_already_descendant() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+
+    // Create a branch off main and add a commit
+    git_run(&["branch", "feature"], &repo);
+    git_run(&["checkout", "feature"], &repo);
+    std::fs::write(repo.join("feature.txt"), "work\n").unwrap();
+    git_run(&["add", "."], &repo);
+    git_run(&["commit", "-m", "feature work"], &repo);
+    let before = git_run(&["rev-parse", "HEAD"], &repo);
+    git_run(&["checkout", "main"], &repo);
+
+    // Rebase feature onto main — should be a no-op since feature is already based on main
+    rebase(&repo, "feature", "main").unwrap();
+
+    let after = git_run(&["rev-parse", "feature"], &repo);
+    assert_eq!(before, after, "rebase should be a no-op when already a descendant");
+}
+
+// --- cleanup_worktree_preserve_branch tests ---
+
+#[test]
+fn cleanup_preserve_branch_removes_dir_keeps_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    let wt_path = wt.path.clone();
+    let branch = wt.branch.clone();
+
+    cleanup_worktree_preserve_branch(&repo, &wt).unwrap();
+
+    // Directory should be gone
+    assert!(!wt_path.exists());
+
+    // Branch should still exist
+    let output = std::process::Command::new("git")
+        .args(["branch", "--list", &branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let branches = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        branches.contains(&branch),
+        "branch {branch} should be preserved"
+    );
+}
+
+#[test]
+fn cleanup_preserve_branch_unlocks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let wt = create_worktree(&repo, TaskId(0), "main").unwrap();
+    lock_worktree(&wt).unwrap();
+
+    cleanup_worktree_preserve_branch(&repo, &wt).unwrap();
+    assert!(!wt.path.exists());
 }

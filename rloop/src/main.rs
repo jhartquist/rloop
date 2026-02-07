@@ -956,6 +956,16 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
                 fmt_tokens(*cache_creation_tokens),
             );
         }
+        Event::MergeFailed {
+            task_id,
+            branch,
+            reason,
+        } => {
+            println!(
+                "{elapsed}  {} task {task_id:02} merge failed — {reason}. Work preserved on branch {branch}",
+                "✗".red()
+            );
+        }
         // Skip some low-level events
         Event::PromptSent { .. } | Event::TokenUsage { .. } => {}
     }
