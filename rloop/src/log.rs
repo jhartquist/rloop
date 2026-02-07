@@ -57,6 +57,20 @@ pub enum Event {
         branch: String,
         reason: String,
     },
+    /// Merge-fix agent started to resolve rebase conflicts.
+    MergeFixStarted {
+        task_id: TaskId,
+    },
+    /// Merge-fix agent successfully resolved conflicts.
+    MergeFixSucceeded {
+        task_id: TaskId,
+        cost_usd: f64,
+    },
+    /// Merge-fix agent failed to resolve conflicts.
+    MergeFixFailed {
+        task_id: TaskId,
+        reason: String,
+    },
     SessionComplete {
         branch: String,
     },
@@ -291,14 +305,38 @@ impl SessionLogger {
                     "✗".red()
                 );
             }
+            Event::MergeFixStarted { task_id } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id} merge-fix agent started",
+                    "→".blue()
+                );
+            }
+            Event::MergeFixSucceeded { task_id, cost_usd } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id} merge-fix resolved (${cost_usd:.2})",
+                    "✓".green()
+                );
+            }
+            Event::MergeFixFailed { task_id, reason } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id} merge-fix failed — {reason}",
+                    "✗".red()
+                );
+            }
             Event::SessionComplete { branch } => {
-                eprintln!("{elapsed}  {} session complete → branch {branch}", "■".green());
+                eprintln!(
+                    "{elapsed}  {} session complete → branch {branch}",
+                    "■".green()
+                );
             }
             Event::SessionAutoMerged {
                 branch,
                 into_branch,
             } => {
-                eprintln!("{elapsed}  {} auto-merged {branch} → {into_branch}", "■".green());
+                eprintln!(
+                    "{elapsed}  {} auto-merged {branch} → {into_branch}",
+                    "■".green()
+                );
             }
             Event::SessionCancelled => {
                 eprintln!("{elapsed}  {} session cancelled", "■".yellow());
@@ -805,6 +843,17 @@ mod tests {
                 task_id: TaskId(9),
                 branch: "rloop-wt-09".into(),
                 reason: "conflict in src/main.rs".into(),
+            },
+            Event::MergeFixStarted {
+                task_id: TaskId(10),
+            },
+            Event::MergeFixSucceeded {
+                task_id: TaskId(10),
+                cost_usd: 0.03,
+            },
+            Event::MergeFixFailed {
+                task_id: TaskId(11),
+                reason: "irreconcilable conflict".into(),
             },
             Event::SessionComplete {
                 branch: "rloop/05".into(),
@@ -1509,7 +1558,9 @@ mod tests {
         let events = load_events(&path).unwrap();
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::TaskStarted { task_id } if *task_id == TaskId(0)));
-        assert!(matches!(&events[1], Event::TaskCompleted { task_id, .. } if *task_id == TaskId(0)));
+        assert!(
+            matches!(&events[1], Event::TaskCompleted { task_id, .. } if *task_id == TaskId(0))
+        );
     }
 
     #[tokio::test]

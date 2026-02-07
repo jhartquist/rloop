@@ -880,13 +880,19 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             println!("{elapsed}    cleaned up {task_id:02}");
         }
         Event::SessionComplete { branch } => {
-            println!("{elapsed}  {} session complete → branch {branch}", "■".green());
+            println!(
+                "{elapsed}  {} session complete → branch {branch}",
+                "■".green()
+            );
         }
         Event::SessionAutoMerged {
             branch,
             into_branch,
         } => {
-            println!("{elapsed}  {} auto-merged {branch} → {into_branch}", "■".green());
+            println!(
+                "{elapsed}  {} auto-merged {branch} → {into_branch}",
+                "■".green()
+            );
         }
         Event::SessionCancelled => {
             println!("{elapsed}  {} session cancelled", "■".yellow());
@@ -963,6 +969,24 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         } => {
             println!(
                 "{elapsed}  {} task {task_id:02} merge failed — {reason}. Work preserved on branch {branch}",
+                "✗".red()
+            );
+        }
+        Event::MergeFixStarted { task_id } => {
+            println!(
+                "{elapsed}  {} task {task_id:02} merge-fix agent started",
+                "→".blue()
+            );
+        }
+        Event::MergeFixSucceeded { task_id, cost_usd } => {
+            println!(
+                "{elapsed}  {} task {task_id:02} merge-fix resolved (${cost_usd:.2})",
+                "✓".green()
+            );
+        }
+        Event::MergeFixFailed { task_id, reason } => {
+            println!(
+                "{elapsed}  {} task {task_id:02} merge-fix failed — {reason}",
                 "✗".red()
             );
         }

@@ -4,6 +4,7 @@ pub mod config;
 pub mod git;
 pub mod lock;
 pub mod log;
+pub mod merge;
 pub mod model;
 pub mod query;
 pub mod session;

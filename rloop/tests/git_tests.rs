@@ -258,7 +258,10 @@ fn rebase_no_conflict() {
     // Feature should be a descendant of main
     let main_rev = git_run(&["rev-parse", "main"], &repo);
     let merge_base = git_run(&["merge-base", "main", "feature"], &repo);
-    assert_eq!(merge_base, main_rev, "feature should be based on main after rebase");
+    assert_eq!(
+        merge_base, main_rev,
+        "feature should be based on main after rebase"
+    );
 }
 
 #[test]
@@ -334,7 +337,10 @@ fn rebase_noop_when_already_descendant() {
     rebase(&repo, "feature", "main").unwrap();
 
     let after = git_run(&["rev-parse", "feature"], &repo);
-    assert_eq!(before, after, "rebase should be a no-op when already a descendant");
+    assert_eq!(
+        before, after,
+        "rebase should be a no-op when already a descendant"
+    );
 }
 
 // --- cleanup_worktree_preserve_branch tests ---

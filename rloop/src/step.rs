@@ -669,10 +669,7 @@ mod tests {
         // Expected: (10k + 50k) / 200k * 100 = 30%
         // NOT: (10k + 50k + 5k + 2k) / 200k * 100 = 33.5%
         let pct = tracker.percentage();
-        assert!(
-            (pct - 30.0).abs() < 0.01,
-            "expected 30%, got {pct}%"
-        );
+        assert!((pct - 30.0).abs() < 0.01, "expected 30%, got {pct}%");
 
         // Second update with same message_id should be ignored (duplicate content block)
         let updated = tracker.update(Some("msg-1"), &usage);
@@ -690,9 +687,6 @@ mod tests {
 
         // Expected: (5k + 25k) / 200k * 100 = 15%
         let pct = tracker.percentage();
-        assert!(
-            (pct - 15.0).abs() < 0.01,
-            "expected 15%, got {pct}%"
-        );
+        assert!((pct - 15.0).abs() < 0.01, "expected 15%, got {pct}%");
     }
 }

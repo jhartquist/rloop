@@ -790,7 +790,8 @@ Do the thing.
     fn parse_task_title_with_brackets_and_special() {
         let dir = tempfile::tempdir().unwrap();
         // Title with multiple special characters
-        let content = "---\nid: 7\ntitle: \"Refactor: [URGENT] fix memory leak - issue #42\"\n---\nBody.\n";
+        let content =
+            "---\nid: 7\ntitle: \"Refactor: [URGENT] fix memory leak - issue #42\"\n---\nBody.\n";
         let path = write_task_file(dir.path(), "07.md", content);
         let task = load_task(&path).unwrap();
         assert_eq!(task.title, "Refactor: [URGENT] fix memory leak - issue #42");
@@ -899,11 +900,7 @@ Do the thing.
     #[test]
     fn ready_linear_chain_nothing_done() {
         // 0 -> 1 -> 2
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[1])];
         let result = ready(&tasks, &[0, 1, 2], &[], &[], &[]);
         // Only task 0 is ready (no deps)
         assert_eq!(result, vec![TaskId(0)]);
@@ -911,22 +908,14 @@ Do the thing.
 
     #[test]
     fn ready_linear_chain_first_done() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[1])];
         let result = ready(&tasks, &[0, 1, 2], &[0], &[], &[]);
         assert_eq!(result, vec![TaskId(1)]);
     }
 
     #[test]
     fn ready_linear_chain_first_two_done() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[1])];
         let result = ready(&tasks, &[0, 1, 2], &[0, 1], &[], &[]);
         assert_eq!(result, vec![TaskId(2)]);
     }
@@ -1001,33 +990,21 @@ Do the thing.
 
     #[test]
     fn ready_all_completed() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[1]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[1])];
         let result = ready(&tasks, &[0, 1, 2], &[0, 1, 2], &[], &[]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn ready_all_failed() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[]),
-            make_task(2, &[]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[]), make_task(2, &[])];
         let result = ready(&tasks, &[0, 1, 2], &[], &[0, 1, 2], &[]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn ready_failed_dep_blocks_dependent() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[0]),
-            make_task(2, &[]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[0]), make_task(2, &[])];
         // Task 0 failed, so task 1 should not be ready (dep 0 not in completed)
         // Task 2 is independent and ready
         let result = ready(&tasks, &[0, 1, 2], &[], &[0], &[]);
@@ -1051,11 +1028,7 @@ Do the thing.
 
     #[test]
     fn ready_preserves_step_order() {
-        let tasks = vec![
-            make_task(0, &[]),
-            make_task(1, &[]),
-            make_task(2, &[]),
-        ];
+        let tasks = vec![make_task(0, &[]), make_task(1, &[]), make_task(2, &[])];
         // Steps in reverse order
         let result = ready(&tasks, &[2, 1, 0], &[], &[], &[]);
         assert_eq!(result, vec![TaskId(2), TaskId(1), TaskId(0)]);

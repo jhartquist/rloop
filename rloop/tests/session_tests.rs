@@ -850,7 +850,11 @@ async fn parallel_wide_dag_throttled() {
 
     // 5 independent tasks + a root that depends on all of them
     for i in 0..5 {
-        helpers::create_task_file(&tasks_dir, i, &helpers::minimal_task(i, &format!("Task {i}")));
+        helpers::create_task_file(
+            &tasks_dir,
+            i,
+            &helpers::minimal_task(i, &format!("Task {i}")),
+        );
     }
     helpers::create_task_file(
         &tasks_dir,
@@ -993,6 +997,9 @@ async fn max_parallel_one_failure_blocks_dependent() {
 // For a merge conflict to occur, both tasks must branch off the same session
 // branch commit (before either has merged). This requires max_parallel >= 2
 // so both worktrees are created from the same base.
+//
+// With the merge-fix agent (Phase 3), simple conflicts are resolved automatically.
+// The rebase fails, then the merge-fix agent is invoked and resolves the conflict.
 
 #[tokio::test]
 async fn parallel_merge_conflict_preserves_branch() {
@@ -1004,6 +1011,7 @@ async fn parallel_merge_conflict_preserves_branch() {
     // Two independent tasks that both write to the same file.
     // With max_parallel=2, both branch off the same session commit.
     // When the second to merge tries to rebase, it will conflict.
+    // The merge-fix agent should resolve the simple conflict.
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Write version A"));
     helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "Write version B"));
     helpers::create_task_file(
@@ -1019,37 +1027,25 @@ async fn parallel_merge_conflict_preserves_branch() {
     executor.add_write(1, "shared.txt", "version B\n");
 
     // max_parallel=2: both tasks run concurrently from the same base.
-    // The second to merge will conflict during rebase.
+    // The second to merge will conflict during rebase, but the merge-fix
+    // agent should resolve it.
     let config = parallel_config(2);
     let result = run_session_with(&repo, TaskId(2), &config, false, &executor)
         .await
         .unwrap();
 
-    // One task should succeed, the other should fail to merge
-    assert!(
-        result.completed_tasks.len() == 1,
-        "expected exactly 1 completed, got: {:?}",
-        result.completed_tasks
-    );
-    assert!(
-        !result.failed_tasks.is_empty(),
-        "expected at least 1 failed (merge conflict), got: {:?}",
+    // The merge-fix agent should resolve the simple conflict, so all 3 tasks complete.
+    assert_eq!(
+        result.completed_tasks.len(),
+        3,
+        "merge-fix agent should resolve simple conflict; completed: {:?}, failed: {:?}",
+        result.completed_tasks,
         result.failed_tasks
     );
-
-    // The merge-failed task's branch should be preserved.
-    // We don't know which task merges first, so check both branches.
-    let failed_id = result.failed_tasks[0];
-    let expected_branch = format!("rloop-wt-{failed_id:02}");
-    let branch_list = std::process::Command::new("git")
-        .args(["branch", "--list", &expected_branch])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    let branches = String::from_utf8_lossy(&branch_list.stdout);
     assert!(
-        branches.contains(&expected_branch),
-        "merge-failed branch {expected_branch} should be preserved"
+        result.failed_tasks.is_empty(),
+        "no tasks should fail with merge-fix agent; failed: {:?}",
+        result.failed_tasks
     );
 
     // Main working tree should still be on main
@@ -1057,7 +1053,7 @@ async fn parallel_merge_conflict_preserves_branch() {
 }
 
 #[tokio::test]
-async fn parallel_merge_conflict_logs_merge_failed_event() {
+async fn parallel_merge_conflict_logs_merge_fix_events() {
     let dir = tempfile::tempdir().unwrap();
     let repo = helpers::init_git_repo(dir.path());
     let tasks_dir = repo.join(".rloop").join("tasks");
@@ -1083,7 +1079,7 @@ async fn parallel_merge_conflict_logs_merge_failed_event() {
         .await
         .unwrap();
 
-    // Check session log for MergeFailed event
+    // Check session log for merge-fix events
     let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
         .unwrap()
         .filter_map(Result::ok)
@@ -1092,30 +1088,35 @@ async fn parallel_merge_conflict_logs_merge_failed_event() {
     let log_path = entries[0].path();
     let events = load_events(&log_path).unwrap();
 
-    let merge_failed: Vec<_> = events
+    // Should have MergeFixStarted event (rebase failed, merge-fix invoked)
+    let merge_fix_started: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, Event::MergeFailed { .. }))
+        .filter(|e| matches!(e, Event::MergeFixStarted { .. }))
         .collect();
     assert!(
-        !merge_failed.is_empty(),
-        "should have at least one MergeFailed event"
+        !merge_fix_started.is_empty(),
+        "should have at least one MergeFixStarted event"
     );
 
-    // Verify the MergeFailed event has the right fields
-    if let Event::MergeFailed {
-        task_id,
-        branch,
-        reason,
-    } = &merge_failed[0]
-    {
+    // Should have MergeFixSucceeded event (agent resolved the conflict)
+    let merge_fix_succeeded: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::MergeFixSucceeded { .. }))
+        .collect();
+    assert!(
+        !merge_fix_succeeded.is_empty(),
+        "should have at least one MergeFixSucceeded event"
+    );
+
+    // Verify MergeFixSucceeded has cost_usd field
+    if let Event::MergeFixSucceeded { task_id, cost_usd } = &merge_fix_succeeded[0] {
         assert!(
             *task_id == TaskId(0) || *task_id == TaskId(1),
-            "failed task should be 0 or 1"
+            "merge-fix task should be 0 or 1"
         );
-        assert!(branch.starts_with("rloop-wt-"));
-        assert!(!reason.is_empty());
+        assert!(*cost_usd >= 0.0, "cost_usd should be non-negative");
     } else {
-        panic!("expected MergeFailed event");
+        panic!("expected MergeFixSucceeded event");
     }
 }
 

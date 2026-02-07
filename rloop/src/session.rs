@@ -5,18 +5,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::Config;
 use crate::git::{
     self, Worktree, cleanup_worktree, cleanup_worktree_preserve_branch, create_worktree,
-    fast_forward_ref, lock_worktree, rebase, rebase_abort,
+    lock_worktree,
 };
 use crate::lock::SessionLock;
 use crate::log::{Event, EventSender, SessionLogger, spawn_logger};
+use crate::merge;
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome, StepResult};
 use crate::task::{
     Task, TaskId, find_ready_tasks, load_all_tasks, mark_completed, resolve_all_dag, resolve_dag,
@@ -129,7 +130,9 @@ async fn execute_dag<E: StepExecutor>(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_parallel));
     let merge_mutex = Arc::new(TokioMutex::new(()));
     let mut futures: FuturesUnordered<
-        std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ExecutionResult>> + Send>>,
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<ExecutionResult>> + Send>,
+        >,
     > = FuturesUnordered::new();
 
     loop {
@@ -205,10 +208,7 @@ async fn execute_dag<E: StepExecutor>(
         }
 
         // Await the next completion
-        let result = futures
-            .next()
-            .await
-            .expect("futures should not be empty")?;
+        let result = futures.next().await.expect("futures should not be empty")?;
 
         let task_id = result.task_id;
         in_flight.remove(&task_id);
@@ -228,28 +228,33 @@ async fn execute_dag<E: StepExecutor>(
             TaskOutcome::Success(_) => {
                 // Remove the worktree directory but keep the branch — can't rebase
                 // a branch that's checked out in a worktree.
-                cleanup_worktree_preserve_branch(repo, &result.worktree).with_context(|| {
-                    format!("failed to cleanup worktree for task {task_id}")
-                })?;
+                cleanup_worktree_preserve_branch(repo, &result.worktree)
+                    .with_context(|| format!("failed to cleanup worktree for task {task_id}"))?;
                 emit(logger, Event::WorktreeCleanedUp { task_id });
 
-                // Serialize merge via mutex
+                // Look up the task for the merge-fix agent prompt
+                let task = tasks
+                    .iter()
+                    .find(|t| t.id == task_id)
+                    .with_context(|| format!("task {task_id} not found for merge"))?;
+
+                // Serialize merge via mutex: rebase -> merge-fix agent -> fail
                 let _guard = merge_mutex.lock().await;
-                let merge_result = merge_task_into_session(
+                let merge_result = merge::merge_with_fix(
                     repo,
+                    task,
                     &result.worktree.branch,
                     session_branch,
                     parent_branch,
-                    task_id,
+                    config,
                     logger,
-                );
+                )
+                .await;
 
                 match merge_result {
                     Ok(()) => {
                         // Clean up the branch now that it's merged
-                        if let Err(e) =
-                            git::git(repo, &["branch", "-D", &result.worktree.branch])
-                        {
+                        if let Err(e) = git::git(repo, &["branch", "-D", &result.worktree.branch]) {
                             eprintln!(
                                 "warning: failed to delete branch {}: {e}",
                                 result.worktree.branch
@@ -282,8 +287,9 @@ async fn execute_dag<E: StepExecutor>(
                 }
             }
             TaskOutcome::Failed(_) => {
-                cleanup_worktree(repo, &result.worktree)
-                    .with_context(|| format!("failed to cleanup worktree for failed task {task_id}"))?;
+                cleanup_worktree(repo, &result.worktree).with_context(|| {
+                    format!("failed to cleanup worktree for failed task {task_id}")
+                })?;
                 emit(logger, Event::WorktreeCleanedUp { task_id });
                 failed_tasks.push(task_id);
                 failed_set.insert(task_id);
@@ -442,63 +448,11 @@ async fn execute_task_in_worktree<E: StepExecutor>(
         let msg = format!("task {task_id:02}: {summary}");
         git::git(&worktree.path, &["commit", "-m", &msg])?;
 
-        emit(
-            logger,
-            Event::TaskCompleted {
-                task_id,
-                summary,
-            },
-        );
+        emit(logger, Event::TaskCompleted { task_id, summary });
         Ok((worktree, TaskOutcome::Success(task_metrics)))
     } else {
         Ok((worktree, TaskOutcome::Failed(task_metrics)))
     }
-}
-
-/// Rebase the task branch onto the session branch, then fast-forward.
-///
-/// The worktree must already be removed before calling this — git can't
-/// rebase a branch that's checked out in a worktree.
-///
-/// Note: `git rebase` changes which branch is checked out in the main worktree.
-/// We save and restore the checked-out state afterward.
-fn merge_task_into_session(
-    repo: &Path,
-    task_branch: &str,
-    session_branch: &str,
-    parent_branch: &str,
-    task_id: TaskId,
-    logger: &EventSender,
-) -> anyhow::Result<()> {
-    // Rebase the task branch onto the session branch.
-    // `git rebase <onto> <branch>` checks out `branch` in the main worktree,
-    // so we must restore the parent branch afterward.
-    if let Err(e) = rebase(repo, task_branch, session_branch) {
-        // Rebase failed — abort and restore
-        if let Err(abort_err) = rebase_abort(repo) {
-            eprintln!("warning: failed to abort rebase for task {task_id}: {abort_err}");
-        }
-        let _ = git::git(repo, &["checkout", parent_branch]);
-        return Err(e);
-    }
-
-    // Fast-forward session branch to the rebased task branch
-    fast_forward_ref(repo, session_branch, task_branch)
-        .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
-
-    // Restore the main worktree to the parent branch
-    git::git(repo, &["checkout", parent_branch])
-        .with_context(|| format!("failed to restore {parent_branch} after merging task {task_id}"))?;
-
-    emit(
-        logger,
-        Event::WorktreeMerged {
-            task_id,
-            into_branch: session_branch.to_string(),
-        },
-    );
-
-    Ok(())
 }
 
 /// Retry loop: run `execute_step` up to `max_retries` times, accumulating learnings.

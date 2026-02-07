@@ -169,6 +169,69 @@ pub fn rebase_abort(repo: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Start a merge of `branch` into the current HEAD without committing.
+///
+/// Returns `true` if the merge is clean (no conflicts), `false` if conflicts remain.
+/// On conflict, the working tree has conflict markers that need manual resolution.
+///
+/// # Errors
+/// Returns an error if the merge command fails for reasons other than conflicts
+/// (e.g. invalid branch name, not a git repo).
+pub fn merge_no_commit(repo: impl AsRef<Path>, branch: &str) -> anyhow::Result<bool> {
+    let repo = repo.as_ref();
+    let output = Command::new("git")
+        .args(["merge", branch, "--no-commit", "--no-ff"])
+        .current_dir(repo)
+        .output()
+        .context("failed to run git merge")?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    // Exit code 1 with "CONFLICT" in output means merge conflicts
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stdout.contains("CONFLICT") || stderr.contains("CONFLICT") {
+        return Ok(false);
+    }
+    bail!(
+        "git merge --no-commit failed: {}{}",
+        stdout.trim(),
+        stderr.trim()
+    );
+}
+
+/// Abort an in-progress merge.
+///
+/// # Errors
+/// Returns an error if there is no merge in progress or the abort fails.
+pub fn merge_abort(repo: impl AsRef<Path>) -> anyhow::Result<()> {
+    git(repo.as_ref(), &["merge", "--abort"]).context("failed to abort merge")?;
+    Ok(())
+}
+
+/// Check whether the working tree contains conflict markers.
+///
+/// Runs `git diff --check` which detects `<<<<<<<` markers left by a merge.
+/// Returns `true` if conflict markers remain, `false` if clean.
+///
+/// # Errors
+/// Returns an error if the git command cannot be executed.
+pub fn has_conflict_markers(repo: impl AsRef<Path>) -> anyhow::Result<bool> {
+    let repo = repo.as_ref();
+    let output = Command::new("git")
+        .args(["diff", "--check"])
+        .current_dir(repo)
+        .output()
+        .context("failed to run git diff --check")?;
+    // Exit code 0 = clean, non-zero = conflicts or whitespace issues
+    // Check stdout for "conflict" marker indicators
+    if output.status.success() {
+        return Ok(false);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.contains("conflict") || stdout.contains("<<<<<<<"))
+}
+
 /// Clean up a worktree: unlock (if locked), remove, and delete the branch.
 ///
 /// # Errors
@@ -212,4 +275,161 @@ fn cleanup_worktree_impl(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a temp git repo with an initial commit.
+    fn init_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git(&repo, &["init"]).unwrap();
+        git(&repo, &["config", "user.email", "test@test.com"]).unwrap();
+        git(&repo, &["config", "user.name", "Test"]).unwrap();
+        std::fs::write(repo.join("README.md"), "# test\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "initial"]).unwrap();
+        (dir, repo)
+    }
+
+    // --- merge_no_commit tests ---
+
+    #[test]
+    fn merge_no_commit_clean() {
+        let (_dir, repo) = init_repo();
+
+        // Create a branch with a new file
+        git(&repo, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(repo.join("feature.txt"), "feature content\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "add feature"]).unwrap();
+        git(&repo, &["checkout", "main"]).unwrap();
+
+        // Merge should be clean
+        let clean = merge_no_commit(&repo, "feature").unwrap();
+        assert!(clean, "merge should be clean when there are no conflicts");
+
+        // Abort to clean up
+        git(&repo, &["merge", "--abort"]).ok(); // May not be in merge state if clean
+    }
+
+    #[test]
+    fn merge_no_commit_with_conflict() {
+        let (_dir, repo) = init_repo();
+
+        // Create conflicting changes on two branches
+        git(&repo, &["checkout", "-b", "branch-a"]).unwrap();
+        std::fs::write(repo.join("shared.txt"), "content A\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "write A"]).unwrap();
+
+        git(&repo, &["checkout", "main"]).unwrap();
+        git(&repo, &["checkout", "-b", "branch-b"]).unwrap();
+        std::fs::write(repo.join("shared.txt"), "content B\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "write B"]).unwrap();
+
+        // Merge branch-a into branch-b (current) should conflict
+        let clean = merge_no_commit(&repo, "branch-a").unwrap();
+        assert!(!clean, "merge should have conflicts");
+
+        // Clean up
+        merge_abort(&repo).unwrap();
+    }
+
+    // --- merge_abort tests ---
+
+    #[test]
+    fn merge_abort_after_conflict() {
+        let (_dir, repo) = init_repo();
+
+        git(&repo, &["checkout", "-b", "branch-a"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "A\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "write A"]).unwrap();
+
+        git(&repo, &["checkout", "main"]).unwrap();
+        git(&repo, &["checkout", "-b", "branch-b"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "B\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "write B"]).unwrap();
+
+        merge_no_commit(&repo, "branch-a").unwrap();
+        merge_abort(&repo).unwrap();
+
+        // Working tree should be clean after abort
+        let status = git(&repo, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.is_empty(),
+            "working tree should be clean after abort"
+        );
+    }
+
+    // --- has_conflict_markers tests ---
+
+    #[test]
+    fn has_conflict_markers_clean() {
+        let (_dir, repo) = init_repo();
+
+        // Clean repo should have no conflict markers
+        let has = has_conflict_markers(&repo).unwrap();
+        assert!(!has, "clean repo should have no conflict markers");
+    }
+
+    #[test]
+    fn has_conflict_markers_with_markers() {
+        let (_dir, repo) = init_repo();
+
+        // Create a conflict
+        git(&repo, &["checkout", "-b", "branch-a"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "A\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "A"]).unwrap();
+
+        git(&repo, &["checkout", "main"]).unwrap();
+        git(&repo, &["checkout", "-b", "branch-b"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "B\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "B"]).unwrap();
+
+        merge_no_commit(&repo, "branch-a").unwrap();
+
+        // Should detect conflict markers
+        let has = has_conflict_markers(&repo).unwrap();
+        assert!(has, "should detect conflict markers");
+
+        merge_abort(&repo).unwrap();
+    }
+
+    #[test]
+    fn has_conflict_markers_after_resolution() {
+        let (_dir, repo) = init_repo();
+
+        // Create a conflict
+        git(&repo, &["checkout", "-b", "branch-a"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "A\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "A"]).unwrap();
+
+        git(&repo, &["checkout", "main"]).unwrap();
+        git(&repo, &["checkout", "-b", "branch-b"]).unwrap();
+        std::fs::write(repo.join("file.txt"), "B\n").unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["commit", "-m", "B"]).unwrap();
+
+        merge_no_commit(&repo, "branch-a").unwrap();
+
+        // Resolve the conflict manually
+        std::fs::write(repo.join("file.txt"), "resolved\n").unwrap();
+        git(&repo, &["add", "file.txt"]).unwrap();
+
+        // Should no longer detect conflict markers
+        let has = has_conflict_markers(&repo).unwrap();
+        assert!(!has, "should not detect conflict markers after resolution");
+
+        // Commit the merge
+        git(&repo, &["commit", "--no-edit"]).unwrap();
+    }
 }
