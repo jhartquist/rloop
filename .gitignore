@@ -1,2 +1,3 @@
 sessions/*.jsonl
 target/
+_*.md
