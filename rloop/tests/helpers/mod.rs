@@ -9,9 +9,9 @@ pub fn create_task_file(dir: &Path, id: u32, content: &str) -> PathBuf {
     path
 }
 
-/// Generate a minimal task file: just id + body.
+/// Generate a minimal task file: id + completed + body.
 pub fn minimal_task(id: u32, description: &str) -> String {
-    format!("---\nid: {id}\n---\n{description}\n")
+    format!("---\nid: {id}\ncompleted: false\n---\n{description}\n")
 }
 
 /// Generate a complete task file with all fields.

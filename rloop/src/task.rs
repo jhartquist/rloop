@@ -168,6 +168,35 @@ pub fn load_all_tasks(dir: impl AsRef<Path>) -> anyhow::Result<Vec<Task>> {
     Ok(tasks)
 }
 
+/// Update a task file on disk, setting `completed: false` to `completed: true`.
+///
+/// # Errors
+/// Returns an error if the file cannot be read/written or doesn't contain `completed: false`.
+pub fn mark_completed(path: impl AsRef<Path>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read task file: {}", path.display()))?;
+
+    if content.contains("completed: true") {
+        return Ok(());
+    }
+
+    let updated = content.replace("completed: false", "completed: true");
+
+    // If nothing changed and there was no `completed: true`, the field is missing
+    if updated == content {
+        bail!(
+            "task file {} has no `completed` field in frontmatter",
+            path.display()
+        );
+    }
+
+    std::fs::write(path, &updated)
+        .with_context(|| format!("failed to write task file: {}", path.display()))?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // DAG resolution via DFS topological sort
 // ---------------------------------------------------------------------------
@@ -700,5 +729,51 @@ Do the thing.
             let back: TaskId = serde_json::from_str(&json).unwrap();
             assert_eq!(back, tid);
         }
+    }
+
+    // --- mark_completed tests ---
+
+    #[test]
+    fn mark_completed_flips_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 3\ncompleted: false\n---\nDo stuff.\n";
+        let path = write_task_file(dir.path(), "03.md", content);
+
+        mark_completed(&path).unwrap();
+
+        let task = load_task(&path).unwrap();
+        assert!(task.completed);
+        // Description preserved
+        assert_eq!(task.description.trim(), "Do stuff.");
+    }
+
+    #[test]
+    fn mark_completed_already_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 3\ncompleted: true\n---\nDone.\n";
+        let path = write_task_file(dir.path(), "03.md", content);
+
+        // Should succeed (no-op)
+        mark_completed(&path).unwrap();
+
+        let task = load_task(&path).unwrap();
+        assert!(task.completed);
+    }
+
+    #[test]
+    fn mark_completed_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.md");
+        assert!(mark_completed(&path).is_err());
+    }
+
+    #[test]
+    fn mark_completed_no_completed_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---\nid: 3\n---\nBody.\n";
+        let path = write_task_file(dir.path(), "03.md", content);
+
+        // No `completed` field at all — should error
+        assert!(mark_completed(&path).is_err());
     }
 }

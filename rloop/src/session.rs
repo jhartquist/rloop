@@ -13,7 +13,7 @@ use crate::git::{
 use crate::lock::SessionLock;
 use crate::log::{Event, SessionLogger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome, StepResult};
-use crate::task::{Task, TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
+use crate::task::{Task, TaskId, load_all_tasks, mark_completed, resolve_all_dag, resolve_dag};
 
 /// Unique identifier for a session (one invocation of rloop).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -348,13 +348,15 @@ fn finish_successful_task(
     summary: &str,
     logger: &mut SessionLogger,
 ) -> anyhow::Result<()> {
-    // Commit any changes the agent made in the worktree
-    let status = git::git(&worktree.path, &["status", "--porcelain"])?;
-    if !status.is_empty() {
-        git::git(&worktree.path, &["add", "-A"])?;
-        let msg = format!("task {task_id:02}: {summary}");
-        git::git(&worktree.path, &["commit", "-m", &msg])?;
-    }
+    // Mark the task as completed in the worktree's copy of the task file
+    let task_file = worktree.path.join(format!(".rloop/tasks/{task_id:02}.md"));
+    mark_completed(&task_file)
+        .with_context(|| format!("failed to mark task {task_id} as completed"))?;
+
+    // Commit the agent's changes + the completed-field update together
+    git::git(&worktree.path, &["add", "-A"])?;
+    let msg = format!("task {task_id:02}: {summary}");
+    git::git(&worktree.path, &["commit", "-m", &msg])?;
 
     fast_forward_ref(repo, session_branch, &worktree.branch)
         .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
