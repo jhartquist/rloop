@@ -1,15 +1,16 @@
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::session::SessionId;
 use crate::task::TaskId;
 
 /// All events that can occur during a session.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
     // rloop lifecycle
@@ -177,6 +178,188 @@ impl SessionLogger {
                 eprintln!("  result: {name}");
             }
         }
+    }
+}
+
+/// Rich terminal printer for Claude stream events.
+///
+/// Formats assistant messages, tool calls, and tool results with colored labels
+/// and relative file paths. Tracks pending tool calls to correlate with results.
+pub struct StreamPrinter {
+    project_dir: PathBuf,
+    pending_tools: HashMap<String, (String, serde_json::Value)>,
+}
+
+impl StreamPrinter {
+    pub fn new(project_dir: impl Into<PathBuf>) -> Self {
+        let project_dir = project_dir.into();
+        let project_dir = project_dir.canonicalize().unwrap_or(project_dir);
+        Self {
+            project_dir,
+            pending_tools: HashMap::new(),
+        }
+    }
+
+    /// Register a tool call so its result can be correlated later.
+    pub fn register_tool_call(&mut self, id: &str, name: &str, input: &serde_json::Value) {
+        self.pending_tools
+            .insert(id.to_string(), (name.to_string(), input.clone()));
+    }
+
+    /// Look up and remove a pending tool call by its ID.
+    pub fn take_pending_tool(&mut self, id: &str) -> Option<(String, serde_json::Value)> {
+        self.pending_tools.remove(id)
+    }
+
+    /// Pretty-print a stream event to the terminal.
+    pub fn print(&self, event: &Event) {
+        match event {
+            Event::AssistantMessage { content } => {
+                let label = "  ASST".cyan().bold();
+                let pad = "      ";
+                for (i, line) in content.lines().enumerate() {
+                    if i == 0 {
+                        eprintln!("{label}  {line}");
+                    } else {
+                        eprintln!("{pad}  {line}");
+                    }
+                }
+            }
+            Event::ToolCall { name, input } => {
+                self.print_tool_call(name, input);
+            }
+            Event::ToolResult { name, output } => {
+                self.print_tool_result(name, output);
+            }
+            _ => {}
+        }
+    }
+
+    fn print_tool_call(&self, name: &str, input: &serde_json::Value) {
+        let label = "  CALL".yellow().bold();
+        let pad = "      ";
+        match name {
+            "Read" => {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                eprintln!("{label}  {} {}", "Read".dimmed(), self.rel(path).dimmed());
+            }
+            "Edit" => {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                eprintln!("{label}  {} {}", "Edit".dimmed(), self.rel(path).dimmed());
+                if let Some(old) = input.get("old_string").and_then(|v| v.as_str()) {
+                    for line in old.lines() {
+                        eprintln!("{pad}  {} {}", "-".red(), line.dimmed());
+                    }
+                }
+                if let Some(new) = input.get("new_string").and_then(|v| v.as_str()) {
+                    for line in new.lines() {
+                        eprintln!("{pad}  {} {}", "+".green(), line.dimmed());
+                    }
+                }
+            }
+            "Write" => {
+                let path = input
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                eprintln!("{label}  {} {}", "Write".dimmed(), self.rel(path).dimmed());
+                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
+                    for line in content.lines() {
+                        eprintln!("{pad}  {}", line.dimmed());
+                    }
+                }
+            }
+            "Bash" => {
+                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+                eprintln!(
+                    "{label}  {} {}",
+                    "Bash".dimmed(),
+                    self.shorten(cmd).dimmed()
+                );
+            }
+            other => {
+                let param = self.extract_key_param(input);
+                if param.is_empty() {
+                    eprintln!("{label}  {}", other.dimmed());
+                } else {
+                    eprintln!("{label}  {} {}", other.dimmed(), param.dimmed());
+                }
+            }
+        }
+    }
+
+    fn print_tool_result(&self, name: &str, output: &serde_json::Value) {
+        let label = "   RES".yellow().bold();
+
+        // Write/Edit: details already shown in CALL, just confirm
+        if matches!(name, "Write" | "Edit") {
+            eprintln!("{label}  {}", format!("{name} ok").dimmed());
+            return;
+        }
+
+        // Read result: try to show file path and line count
+        if name == "Read"
+            && let Some(file) = output.get("file")
+        {
+            let path = file
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let num_lines = file.get("numLines").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            eprintln!(
+                "{label}  {}",
+                format!("{} ({num_lines} lines)", self.rel(path)).dimmed()
+            );
+            return;
+        }
+
+        // Try to extract text from various result shapes
+        if let Some(text) = output
+            .as_str()
+            .or_else(|| output.get("text").and_then(|v| v.as_str()))
+            .or_else(|| output.get("content").and_then(|v| v.as_str()))
+            .or_else(|| output.get("stdout").and_then(|v| v.as_str()))
+            .or_else(|| output.get("output").and_then(|v| v.as_str()))
+        {
+            eprintln!("{label}  {}", name.dimmed());
+            for line in text.lines() {
+                eprintln!("        {}", self.shorten(line).dimmed());
+            }
+            return;
+        }
+
+        eprintln!("{label}  {}", format!("{name} ok").dimmed());
+    }
+
+    /// Strip `project_dir` prefix from a path string.
+    fn rel(&self, path: &str) -> String {
+        let prefix = self.project_dir.to_string_lossy();
+        path.strip_prefix(prefix.as_ref())
+            .map_or(path, |p| p.strip_prefix('/').unwrap_or(p))
+            .to_string()
+    }
+
+    /// Replace `project_dir` prefix anywhere in a string.
+    fn shorten(&self, text: &str) -> String {
+        let prefix = format!("{}/", self.project_dir.to_string_lossy());
+        text.replace(&prefix, "")
+    }
+
+    fn extract_key_param(&self, input: &serde_json::Value) -> String {
+        if let Some(obj) = input.as_object() {
+            for key in ["command", "pattern", "query", "file_path", "path"] {
+                if let Some(val) = obj.get(key).and_then(|v| v.as_str()) {
+                    return self.rel(val);
+                }
+            }
+        }
+        String::new()
     }
 }
 

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::config::Config;
-use crate::log::Event;
+use crate::log::{Event, StreamPrinter};
 use crate::model::Model;
 use crate::task::{Task, TaskId};
 use crate::tool::BuiltinTool;
@@ -39,6 +39,9 @@ pub struct StepResult {
     pub duration: Duration,
     /// Claude Code session ID — for tracing back to CC logs or future session resume.
     pub cc_session_id: Option<String>,
+    /// Claude stream events collected during the step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
 }
 
 /// Serialize `Duration` as seconds (f64) for JSON compatibility.
@@ -203,6 +206,103 @@ fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Messag
     }
 }
 
+/// Collected data from processing the Claude response stream.
+struct StreamData {
+    cc_session_id: Option<String>,
+    result_message: Option<Message>,
+    events: Vec<Event>,
+}
+
+/// Process the Claude response stream: collect events, print to terminal, handle interrupts.
+async fn process_stream(
+    client: &mut ClaudeClient,
+    stop: &std::sync::atomic::AtomicBool,
+    worktree_path: &Path,
+) -> anyhow::Result<StreamData> {
+    let mut cc_session_id: Option<String> = None;
+    let mut result_message: Option<Message> = None;
+    let mut events: Vec<Event> = Vec::new();
+    let mut interrupted = false;
+    let mut printer = StreamPrinter::new(worktree_path);
+
+    let mut stream = client.receive_response();
+    while let Some(result) = stream.next().await {
+        let msg = result.context("error receiving message from Claude stream")?;
+
+        match &msg {
+            Message::System(m) => {
+                cc_session_id = m.session_id.clone();
+            }
+            Message::Assistant(m) => {
+                for block in &m.message.content {
+                    match block {
+                        ContentBlock::Text(t) => {
+                            let event = Event::AssistantMessage {
+                                content: t.text.clone(),
+                            };
+                            printer.print(&event);
+                            events.push(event);
+                        }
+                        ContentBlock::ToolUse(tu) => {
+                            printer.register_tool_call(&tu.id, &tu.name, &tu.input);
+                            let event = Event::ToolCall {
+                                name: tu.name.clone(),
+                                input: tu.input.clone(),
+                            };
+                            printer.print(&event);
+                            events.push(event);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Message::User(user) => {
+                // Tool results arrive via the extra field (SDK quirk).
+                let tool_use_id = user
+                    .extra
+                    .pointer("/message/content/0/tool_use_id")
+                    .and_then(|v| v.as_str());
+
+                let tool_info = tool_use_id.and_then(|id| printer.take_pending_tool(id));
+
+                let tur = user.extra.get("tool_use_result").cloned();
+                let content_text = user
+                    .extra
+                    .pointer("/message/content/0/content")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                if tur.is_some() || content_text.is_some() {
+                    let name = tool_info
+                        .as_ref()
+                        .map_or_else(|| "?".to_string(), |(n, _)| n.clone());
+                    let output = tur
+                        .or_else(|| content_text.map(serde_json::Value::String))
+                        .unwrap_or(serde_json::Value::Null);
+                    let event = Event::ToolResult { name, output };
+                    printer.print(&event);
+                    events.push(event);
+                }
+            }
+            Message::Result(_) => {
+                result_message = Some(msg.clone());
+            }
+            _ => {}
+        }
+
+        if !interrupted && stop.load(Ordering::SeqCst) {
+            client.interrupt().await.ok();
+            interrupted = true;
+        }
+    }
+
+    Ok(StreamData {
+        cc_session_id,
+        result_message,
+        events,
+    })
+}
+
 /// Execute a task in a worktree: run the agent, verify, return the outcome.
 ///
 /// This is a single attempt. Retry logic lives at the session/orchestration level.
@@ -259,69 +359,22 @@ pub async fn execute_step(
         .await
         .context("failed to send prompt to Claude")?;
 
-    // 7. Stream messages
-    let mut cc_session_id: Option<String> = None;
-    let mut result_message: Option<Message> = None;
-    let mut events: Vec<Event> = Vec::new();
-    let mut interrupted = false;
-
-    {
-        let mut stream = client.receive_response();
-        while let Some(result) = stream.next().await {
-            let msg = result.context("error receiving message from Claude stream")?;
-
-            match &msg {
-                Message::System(m) => {
-                    cc_session_id = m.session_id.clone();
-                }
-                Message::Assistant(m) => {
-                    for block in &m.message.content {
-                        match block {
-                            ContentBlock::Text(t) => {
-                                events.push(Event::AssistantMessage {
-                                    content: t.text.clone(),
-                                });
-                            }
-                            ContentBlock::ToolUse(tu) => {
-                                events.push(Event::ToolCall {
-                                    name: tu.name.clone(),
-                                    input: tu.input.clone(),
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Message::Result(_) => {
-                    result_message = Some(msg.clone());
-                }
-                _ => {}
-            }
-
-            // Check if the complete tool fired (stop flag set)
-            if !interrupted && stop.load(Ordering::SeqCst) {
-                client.interrupt().await.ok();
-                interrupted = true;
-                // Keep reading to receive the Result message with cost/duration.
-            }
-        }
-    }
-
+    // 7. Stream and collect events
+    let mut data = process_stream(&mut client, &stop, worktree_path).await?;
     client.disconnect().await.ok();
 
     // 8. Extract cost and session_id from Result message
-    let cost_usd = if let Some(Message::Result(res)) = &result_message {
-        if cc_session_id.is_none() {
-            cc_session_id = Some(res.session_id.clone());
+    let cost_usd = if let Some(Message::Result(res)) = &data.result_message {
+        if data.cc_session_id.is_none() {
+            data.cc_session_id = Some(res.session_id.clone());
         }
         res.total_cost_usd.unwrap_or(0.0)
     } else {
         0.0
     };
-    let _ = events; // Events collected for future use by SessionLogger
 
     // 9. Determine outcome
-    let outcome = determine_outcome(&summary, result_message.as_ref());
+    let outcome = determine_outcome(&summary, data.result_message.as_ref());
 
     Ok(StepResult {
         task_id: task.id,
@@ -329,7 +382,8 @@ pub async fn execute_step(
         model: task.model,
         cost_usd,
         duration: start.elapsed(),
-        cc_session_id,
+        cc_session_id: data.cc_session_id,
+        events: data.events,
     })
 }
 
@@ -362,6 +416,7 @@ mod tests {
             cost_usd: 0.05,
             duration: Duration::from_secs(30),
             cc_session_id: None,
+            events: vec![],
         };
         assert_eq!(result.task_id, TaskId(5));
         assert!(matches!(result.model, Model::Sonnet));
@@ -377,6 +432,7 @@ mod tests {
             cost_usd: 0.10,
             duration: Duration::from_secs(60),
             cc_session_id: Some("session-abc".into()),
+            events: vec![],
         };
         assert_eq!(
             result_with_session.cc_session_id.as_deref(),

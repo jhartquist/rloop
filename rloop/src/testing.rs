@@ -111,6 +111,7 @@ mod tests {
             cost_usd: 0.01,
             duration: Duration::from_secs(5),
             cc_session_id: Some(format!("session-{id}")),
+            events: vec![],
         }
     }
 

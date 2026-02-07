@@ -60,6 +60,7 @@ impl StepExecutor for MockExecutor {
             cost_usd: 0.0,
             duration: Duration::ZERO,
             cc_session_id: None,
+            events: vec![],
         })
     }
 }

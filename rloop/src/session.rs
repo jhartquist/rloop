@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::Path;
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::git::{
@@ -14,7 +14,7 @@ use crate::step::{RealStepExecutor, StepExecutor, StepOutcome};
 use crate::task::{Task, TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
 
 /// Unique identifier for a session (one invocation of rloop).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
 impl fmt::Display for SessionId {
@@ -97,10 +97,10 @@ async fn execute_task<E: StepExecutor>(
     }
 
     // Execute with retries
-    let succeeded = run_with_retries(task, &worktree, config, logger, executor).await?;
+    let summary = run_with_retries(task, &worktree, config, logger, executor).await?;
 
-    if succeeded {
-        finish_successful_task(repo, &worktree, session_branch, task_id, logger)?;
+    if let Some(summary) = summary {
+        finish_successful_task(repo, &worktree, session_branch, task_id, &summary, logger)?;
         Ok(TaskOutcome::Success)
     } else {
         finish_failed_task(repo, &worktree, task_id, logger)?;
@@ -109,13 +109,15 @@ async fn execute_task<E: StepExecutor>(
 }
 
 /// Retry loop: run `execute_step` up to `max_retries` times, accumulating learnings.
+///
+/// Returns the completion summary on success, or `None` on failure.
 async fn run_with_retries<E: StepExecutor>(
     task: &Task,
     worktree: &Worktree,
     config: &Config,
     logger: &mut SessionLogger,
     executor: &E,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<String>> {
     let task_id = task.id;
     let mut attempts: u32 = 0;
     let mut prior_learnings: Vec<String> = Vec::new();
@@ -128,6 +130,11 @@ async fn run_with_retries<E: StepExecutor>(
             .execute(task, &worktree.path, config, &prior_learnings)
             .await?;
 
+        // Log all Claude stream events from this step
+        for event in &step_result.events {
+            let _ = logger.log(event);
+        }
+
         match &step_result.outcome {
             StepOutcome::Success { summary } => {
                 emit(
@@ -137,7 +144,7 @@ async fn run_with_retries<E: StepExecutor>(
                         summary: summary.clone(),
                     },
                 );
-                return Ok(true);
+                return Ok(Some(summary.clone()));
             }
             StepOutcome::Failed { reason, learnings } => {
                 prior_learnings.push(learnings.clone());
@@ -153,21 +160,30 @@ async fn run_with_retries<E: StepExecutor>(
                             ),
                         },
                     );
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
         }
     }
 }
 
-/// Fast-forward the session branch to the task's tip and clean up.
+/// Auto-commit worktree changes, fast-forward the session branch, and clean up.
 fn finish_successful_task(
     repo: &Path,
     worktree: &Worktree,
     session_branch: &str,
     task_id: TaskId,
+    summary: &str,
     logger: &mut SessionLogger,
 ) -> anyhow::Result<()> {
+    // Commit any changes the agent made in the worktree
+    let status = git::git(&worktree.path, &["status", "--porcelain"])?;
+    if !status.is_empty() {
+        git::git(&worktree.path, &["add", "-A"])?;
+        let msg = format!("task {task_id:02}: {summary}");
+        git::git(&worktree.path, &["commit", "-m", &msg])?;
+    }
+
     fast_forward_ref(repo, session_branch, &worktree.branch)
         .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
 
