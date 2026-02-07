@@ -70,6 +70,18 @@ pub enum Event {
         name: String,
         output: serde_json::Value,
     },
+    /// Per-message token usage from the Claude API.
+    TokenUsage {
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+    },
+    /// Agent's current context window utilization as a percentage.
+    ContextUsage {
+        percentage: f32,
+        recommendation: String,
+    },
 }
 
 /// Logs session events to JSONL files and prints to terminal.
@@ -177,6 +189,16 @@ impl SessionLogger {
             Event::ToolResult { name, .. } => {
                 eprintln!("  result: {name}");
             }
+            Event::TokenUsage {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
+                eprintln!("  tokens: {input_tokens} in / {output_tokens} out");
+            }
+            Event::ContextUsage { percentage, .. } => {
+                eprintln!("  context: {percentage:.1}%");
+            }
         }
     }
 }
@@ -230,6 +252,25 @@ impl StreamPrinter {
             }
             Event::ToolResult { name, output } => {
                 self.print_tool_result(name, output);
+            }
+            Event::TokenUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+            } => {
+                let label = " USAGE".dimmed();
+                eprintln!(
+                    "{label}  in={input_tokens} out={output_tokens} \
+                     cache_read={cache_read_input_tokens} cache_create={cache_creation_input_tokens}"
+                );
+            }
+            Event::ContextUsage {
+                percentage,
+                recommendation,
+            } => {
+                let label = "   CTX".dimmed();
+                eprintln!("{label}  {percentage:.1}% — {recommendation}");
             }
             _ => {}
         }
@@ -433,6 +474,16 @@ mod tests {
                 name: "read".into(),
                 output: json!("contents"),
             },
+            Event::TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: 1000,
+                cache_creation_input_tokens: 500,
+            },
+            Event::ContextUsage {
+                percentage: 42.5,
+                recommendation: "plenty of room".into(),
+            },
         ];
         for event in &events {
             let json = serde_json::to_string(event);
@@ -498,5 +549,170 @@ mod tests {
                 summary: "done".into(),
             })
             .unwrap();
+    }
+
+    #[test]
+    fn roundtrip_token_usage() {
+        let event = Event::TokenUsage {
+            input_tokens: 3,
+            output_tokens: 457,
+            cache_read_input_tokens: 64996,
+            cache_creation_input_tokens: 8280,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Event::TokenUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+            } => {
+                assert_eq!(input_tokens, 3);
+                assert_eq!(output_tokens, 457);
+                assert_eq!(cache_read_input_tokens, 64996);
+                assert_eq!(cache_creation_input_tokens, 8280);
+            }
+            other => panic!("Expected TokenUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_context_usage() {
+        let event = Event::ContextUsage {
+            percentage: 47.3,
+            recommendation: "plenty of room".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Event::ContextUsage {
+                percentage,
+                recommendation,
+            } => {
+                assert!((percentage - 47.3).abs() < f32::EPSILON);
+                assert_eq!(recommendation, "plenty of room");
+            }
+            other => panic!("Expected ContextUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_all_event_variants() {
+        let events = vec![
+            Event::SessionStarted {
+                session_id: SessionId("s1".into()),
+                target: TaskId(0),
+            },
+            Event::TaskStarted { task_id: TaskId(1) },
+            Event::WorktreeCreated {
+                task_id: TaskId(2),
+                path: PathBuf::from("/tmp/wt"),
+            },
+            Event::PromptSent { task_id: TaskId(3) },
+            Event::VerificationRan {
+                task_id: TaskId(4),
+                command: "cargo test".into(),
+                passed: true,
+                output: "ok".into(),
+            },
+            Event::TaskCompleted {
+                task_id: TaskId(5),
+                summary: "done".into(),
+            },
+            Event::TaskFailed {
+                task_id: TaskId(6),
+                reason: "fail".into(),
+            },
+            Event::WorktreeMerged {
+                task_id: TaskId(7),
+                into_branch: "main".into(),
+            },
+            Event::WorktreeCleanedUp { task_id: TaskId(8) },
+            Event::SessionComplete {
+                branch: "rloop/05".into(),
+            },
+            Event::SessionAutoMerged {
+                branch: "rloop/05".into(),
+                into_branch: "main".into(),
+            },
+            Event::SessionCancelled,
+            Event::AssistantMessage {
+                content: "hello".into(),
+            },
+            Event::ToolCall {
+                name: "read".into(),
+                input: json!({"path": "/foo"}),
+            },
+            Event::ToolResult {
+                name: "read".into(),
+                output: json!("contents"),
+            },
+            Event::TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: 1000,
+                cache_creation_input_tokens: 500,
+            },
+            Event::ContextUsage {
+                percentage: 42.5,
+                recommendation: "plenty of room".into(),
+            },
+        ];
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let roundtripped: Event = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&roundtripped).unwrap();
+            assert_eq!(json, json2, "Roundtrip failed for {event:?}");
+        }
+    }
+
+    #[test]
+    fn token_usage_zero_values() {
+        let event = Event::TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Event::TokenUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+            } => {
+                assert_eq!(input_tokens, 0);
+                assert_eq!(output_tokens, 0);
+                assert_eq!(cache_read_input_tokens, 0);
+                assert_eq!(cache_creation_input_tokens, 0);
+            }
+            other => panic!("Expected TokenUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn token_usage_large_values() {
+        let event = Event::TokenUsage {
+            input_tokens: u64::MAX,
+            output_tokens: u64::MAX,
+            cache_read_input_tokens: u64::MAX,
+            cache_creation_input_tokens: u64::MAX,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Event::TokenUsage {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
+                assert_eq!(input_tokens, u64::MAX);
+                assert_eq!(output_tokens, u64::MAX);
+            }
+            other => panic!("Expected TokenUsage, got {other:?}"),
+        }
     }
 }

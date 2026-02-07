@@ -228,6 +228,84 @@ fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Messag
     }
 }
 
+/// Extract a `TokenUsage` event from a Claude SDK usage JSON value.
+fn extract_token_usage(usage: &serde_json::Value) -> Event {
+    Event::TokenUsage {
+        input_tokens: usage
+            .get("input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        cache_read_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    }
+}
+
+/// Compute a context usage percentage from cumulative token counts.
+///
+/// Uses a 200k token context window as the baseline (Claude's typical window).
+/// Returns the percentage and a human-readable recommendation.
+fn compute_context_usage(total_input: u64, total_output: u64) -> Event {
+    // Claude models typically have a 200k token context window.
+    const CONTEXT_WINDOW: f64 = 200_000.0;
+
+    #[allow(clippy::cast_precision_loss)] // token counts fit comfortably in f64 mantissa
+    let used = (total_input + total_output) as f64;
+    #[allow(clippy::cast_possible_truncation)]
+    let percentage = ((used / CONTEXT_WINDOW) * 100.0) as f32;
+
+    let recommendation = if percentage < 50.0 {
+        "plenty of room".to_string()
+    } else if percentage < 70.0 {
+        "getting full, consider wrapping up".to_string()
+    } else if percentage < 90.0 {
+        "running low, wrap up soon".to_string()
+    } else {
+        "critical, finish immediately".to_string()
+    };
+
+    Event::ContextUsage {
+        percentage,
+        recommendation,
+    }
+}
+
+/// Extract token usage and context percentage events from a Result message's usage data.
+fn extract_result_usage(usage: &serde_json::Value) -> Vec<Event> {
+    let mut events = Vec::with_capacity(2);
+
+    events.push(extract_token_usage(usage));
+
+    let total_input = usage
+        .get("input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+        + usage
+            .get("cache_read_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+        + usage
+            .get("cache_creation_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+    let total_output = usage
+        .get("output_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    events.push(compute_context_usage(total_input, total_output));
+    events
+}
+
 /// Collected data from processing the Claude response stream.
 struct StreamData {
     cc_session_id: Option<String>,
@@ -277,6 +355,13 @@ async fn process_stream(
                         _ => {}
                     }
                 }
+
+                // Extract per-message token usage
+                if let Some(usage) = &m.message.usage {
+                    let event = extract_token_usage(usage);
+                    printer.print(&event);
+                    events.push(event);
+                }
             }
             Message::User(user) => {
                 // Tool results arrive via the extra field (SDK quirk).
@@ -306,7 +391,13 @@ async fn process_stream(
                     events.push(event);
                 }
             }
-            Message::Result(_) => {
+            Message::Result(res) => {
+                if let Some(usage) = &res.usage {
+                    for event in extract_result_usage(usage) {
+                        printer.print(&event);
+                        events.push(event);
+                    }
+                }
                 result_message = Some(msg.clone());
             }
             _ => {}
