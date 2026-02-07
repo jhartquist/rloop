@@ -86,14 +86,36 @@ impl StepExecutor for RealStepExecutor {
     }
 }
 
-/// Build the user prompt from the task description and any prior failure learnings.
+/// Build the user prompt: instructions first, then task description, then learnings.
 fn build_prompt(task: &Task, prior_learnings: &[String]) -> String {
-    let mut prompt = task.description.clone();
+    use std::fmt::Write;
+
+    let mut prompt = String::from(
+        "You are an autonomous coding agent working on a single task in an isolated git worktree.\n\
+         \n\
+         ## Completion\n\
+         \n\
+         When you have finished the task, call the `complete` tool with a brief summary.\n",
+    );
+
+    if task.verification.is_some() {
+        prompt.push_str(
+            "Verification commands run automatically when you call `complete`. \
+             If they fail you will get the output back and can try again.\n",
+        );
+    }
+
+    prompt.push_str(
+        "\nIf you cannot complete the task, stop and explain the reason \
+         and what you learned so future attempts can build on your work.\n",
+    );
+
+    prompt.push_str("\n## Task\n\n");
+    prompt.push_str(&task.description);
 
     if !prior_learnings.is_empty() {
         prompt.push_str("\n\n## Previous Attempt Learnings\n");
         for learning in prior_learnings {
-            use std::fmt::Write;
             write!(prompt, "\n- {learning}").expect("write to String never fails");
         }
         prompt.push('\n');
