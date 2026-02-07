@@ -41,6 +41,8 @@ pub struct StepResult {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// Actual model ID string from the Claude SDK (e.g. "claude-sonnet-4-20250514").
+    pub model_id: Option<String>,
     /// Claude Code session ID — for tracing back to CC logs or future session resume.
     pub cc_session_id: Option<String>,
     /// Claude stream events collected during the step.
@@ -341,6 +343,7 @@ impl TokenAccumulator {
 /// Collected data from processing the Claude response stream.
 struct StreamData {
     cc_session_id: Option<String>,
+    model_id: Option<String>,
     result_message: Option<Message>,
     events: Vec<Event>,
     tokens: TokenAccumulator,
@@ -353,6 +356,7 @@ async fn process_stream(
     worktree_path: &Path,
 ) -> anyhow::Result<StreamData> {
     let mut cc_session_id: Option<String> = None;
+    let mut model_id: Option<String> = None;
     let mut result_message: Option<Message> = None;
     let mut events: Vec<Event> = Vec::new();
     let mut tokens = TokenAccumulator::default();
@@ -366,6 +370,7 @@ async fn process_stream(
         match &msg {
             Message::System(m) => {
                 cc_session_id = m.session_id.clone();
+                model_id = m.model.clone();
             }
             Message::Assistant(m) => {
                 for block in &m.message.content {
@@ -450,6 +455,7 @@ async fn process_stream(
 
     Ok(StreamData {
         cc_session_id,
+        model_id,
         result_message,
         events,
         tokens,
@@ -546,6 +552,7 @@ pub async fn execute_step(
         output_tokens: data.tokens.output_tokens,
         cache_read_tokens: data.tokens.cache_read_tokens,
         cache_creation_tokens: data.tokens.cache_creation_tokens,
+        model_id: data.model_id,
         cc_session_id: data.cc_session_id,
         events: data.events,
     })
@@ -583,12 +590,14 @@ mod tests {
             output_tokens: 500,
             cache_read_tokens: 200,
             cache_creation_tokens: 100,
+            model_id: None,
             cc_session_id: None,
             events: vec![],
         };
         assert_eq!(result.task_id, TaskId(5));
         assert!(matches!(result.model, Model::Sonnet));
         assert!(result.cc_session_id.is_none());
+        assert!(result.model_id.is_none());
         assert_eq!(result.input_tokens, 1000);
         assert_eq!(result.output_tokens, 500);
         assert_eq!(result.cache_read_tokens, 200);
@@ -607,12 +616,17 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            model_id: Some("claude-opus-4-20250514".into()),
             cc_session_id: Some("session-abc".into()),
             events: vec![],
         };
         assert_eq!(
             result_with_session.cc_session_id.as_deref(),
             Some("session-abc")
+        );
+        assert_eq!(
+            result_with_session.model_id.as_deref(),
+            Some("claude-opus-4-20250514")
         );
     }
 }

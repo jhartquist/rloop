@@ -56,6 +56,21 @@ pub enum Event {
         branch: String,
         into_branch: String,
     },
+    /// Rich session banner printed at session start.
+    SessionBanner {
+        session_id: SessionId,
+        datetime: String,
+        target: TaskId,
+        parent_branch: String,
+        session_branch: String,
+    },
+    /// Step start info printed when a step begins executing.
+    StepStarted {
+        task_id: TaskId,
+        attempt: u32,
+        model_id: String,
+        cc_session_id: String,
+    },
     SessionCancelled,
 
     // Claude stream events
@@ -185,6 +200,29 @@ impl SessionLogger {
                     "▶".green(),
                     session_id,
                     target
+                );
+            }
+            Event::SessionBanner {
+                session_id,
+                datetime,
+                target,
+                parent_branch,
+                session_branch,
+            } => {
+                eprintln!("{} Session {session_id}", "▶".green());
+                eprintln!("  Date:   {datetime}");
+                eprintln!("  Target: task {target:02}");
+                eprintln!("  Branch: {parent_branch} → {session_branch}");
+            }
+            Event::StepStarted {
+                task_id,
+                attempt,
+                model_id,
+                cc_session_id,
+            } => {
+                eprintln!(
+                    "{} Task {task_id:02}  step {attempt}  model: {model_id}  cc: {cc_session_id}",
+                    "→".blue(),
                 );
             }
             Event::TaskStarted { task_id } => {
@@ -655,6 +693,19 @@ mod tests {
             Event::SessionStarted {
                 session_id: SessionId("s1".into()),
                 target: TaskId(0),
+            },
+            Event::SessionBanner {
+                session_id: SessionId("20250206-143022".into()),
+                datetime: "2025-02-06 14:30:22 PST".into(),
+                target: TaskId(5),
+                parent_branch: "main".into(),
+                session_branch: "rloop-05".into(),
+            },
+            Event::StepStarted {
+                task_id: TaskId(3),
+                attempt: 1,
+                model_id: "claude-sonnet-4-20250514".into(),
+                cc_session_id: "abc-123".into(),
             },
             Event::TaskStarted { task_id: TaskId(1) },
             Event::WorktreeCreated {
@@ -1217,5 +1268,109 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         let backup = dir.path().join("data.json.bak");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+    }
+
+    // --- SessionBanner and StepStarted tests ---
+
+    #[test]
+    fn session_banner_roundtrip() {
+        let event = Event::SessionBanner {
+            session_id: SessionId("20250206-143022".into()),
+            datetime: "2025-02-06 14:30:22 PST".into(),
+            target: TaskId(5),
+            parent_branch: "main".into(),
+            session_branch: "rloop-05".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let roundtripped: Event = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&roundtripped).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn session_banner_contains_fields() {
+        let event = Event::SessionBanner {
+            session_id: SessionId("20250206-143022".into()),
+            datetime: "2025-02-06 14:30:22 PST".into(),
+            target: TaskId(5),
+            parent_branch: "main".into(),
+            session_branch: "rloop-05".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("SessionBanner"));
+        assert!(json.contains("20250206-143022"));
+        assert!(json.contains("2025-02-06 14:30:22 PST"));
+        assert!(json.contains("rloop-05"));
+        assert!(json.contains("main"));
+    }
+
+    #[test]
+    fn step_started_roundtrip() {
+        let event = Event::StepStarted {
+            task_id: TaskId(3),
+            attempt: 1,
+            model_id: "claude-sonnet-4-20250514".into(),
+            cc_session_id: "abc-123".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let roundtripped: Event = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&roundtripped).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn step_started_contains_fields() {
+        let event = Event::StepStarted {
+            task_id: TaskId(3),
+            attempt: 2,
+            model_id: "claude-opus-4-20250514".into(),
+            cc_session_id: "session-xyz-456".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("StepStarted"));
+        assert!(json.contains("claude-opus-4-20250514"));
+        assert!(json.contains("session-xyz-456"));
+        assert!(json.contains(r#""attempt":2"#));
+    }
+
+    #[test]
+    fn session_banner_logged_to_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logger = SessionLogger::new(dir.path(), SessionId("test".into())).unwrap();
+        let banner = Event::SessionBanner {
+            session_id: SessionId("test".into()),
+            datetime: "2025-02-06 14:30:22 PST".into(),
+            target: TaskId(5),
+            parent_branch: "main".into(),
+            session_branch: "rloop-05".into(),
+        };
+        logger.log(&banner).unwrap();
+
+        let path = dir.path().join("test.jsonl");
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Event::SessionBanner { session_id, .. } if session_id.0 == "test")
+        );
+    }
+
+    #[test]
+    fn step_started_logged_to_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logger = SessionLogger::new(dir.path(), SessionId("test".into())).unwrap();
+        let step = Event::StepStarted {
+            task_id: TaskId(3),
+            attempt: 1,
+            model_id: "claude-sonnet-4-20250514".into(),
+            cc_session_id: "abc-123".into(),
+        };
+        logger.log(&step).unwrap();
+
+        let path = dir.path().join("test.jsonl");
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Event::StepStarted { task_id, attempt, .. } if *task_id == TaskId(3) && *attempt == 1)
+        );
     }
 }

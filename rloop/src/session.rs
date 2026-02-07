@@ -270,6 +270,20 @@ async fn run_with_retries<E: StepExecutor>(
             .execute(task, &worktree.path, config, &prior_learnings)
             .await?;
 
+        // Emit step start info (model_id and cc_session_id come from the SDK System message)
+        emit(
+            logger,
+            &Event::StepStarted {
+                task_id,
+                attempt: attempts,
+                model_id: step_result
+                    .model_id
+                    .clone()
+                    .unwrap_or_else(|| step_result.model.to_string()),
+                cc_session_id: step_result.cc_session_id.clone().unwrap_or_default(),
+            },
+        );
+
         // Log all Claude stream events from this step
         for event in &step_result.events {
             if let Err(e) = logger.log(event) {
@@ -414,14 +428,6 @@ pub async fn run_session_with<E: StepExecutor>(
     let session_dir = rloop_dir.join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
 
-    emit(
-        &mut logger,
-        &Event::SessionStarted {
-            session_id: session_id.clone(),
-            target: target_task,
-        },
-    );
-
     let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve DAG
@@ -431,6 +437,29 @@ pub async fn run_session_with<E: StepExecutor>(
 
     // Create session branch off current HEAD
     let session_branch = format!("rloop-{target_task:02}");
+
+    emit(
+        &mut logger,
+        &Event::SessionStarted {
+            session_id: session_id.clone(),
+            target: target_task,
+        },
+    );
+
+    let datetime = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string();
+    emit(
+        &mut logger,
+        &Event::SessionBanner {
+            session_id: session_id.clone(),
+            datetime,
+            target: target_task,
+            parent_branch: parent_branch.clone(),
+            session_branch: session_branch.clone(),
+        },
+    );
+
     create_session_branch(repo, &session_branch)
         .with_context(|| format!("failed to create session branch {session_branch}"))?;
 
@@ -517,6 +546,18 @@ pub async fn run_all_session_with<E: StepExecutor>(
 
     // Use TaskId(u32::MAX) as sentinel for "all tasks"
     let all_target = TaskId(u32::MAX);
+
+    let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
+
+    // Load tasks and resolve full DAG
+    let tasks_dir = rloop_dir.join("tasks");
+    let tasks = load_all_tasks(&tasks_dir)?;
+    let plan = resolve_all_dag(&tasks)?;
+
+    // Create session branch
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let session_branch = format!("rloop-all-{timestamp}");
+
     emit(
         &mut logger,
         &Event::SessionStarted {
@@ -525,12 +566,19 @@ pub async fn run_all_session_with<E: StepExecutor>(
         },
     );
 
-    let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
-
-    // Load tasks and resolve full DAG
-    let tasks_dir = rloop_dir.join("tasks");
-    let tasks = load_all_tasks(&tasks_dir)?;
-    let plan = resolve_all_dag(&tasks)?;
+    let datetime = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string();
+    emit(
+        &mut logger,
+        &Event::SessionBanner {
+            session_id: session_id.clone(),
+            datetime,
+            target: all_target,
+            parent_branch: parent_branch.clone(),
+            session_branch: session_branch.clone(),
+        },
+    );
 
     if plan.steps.is_empty() {
         emit(
@@ -550,9 +598,6 @@ pub async fn run_all_session_with<E: StepExecutor>(
         });
     }
 
-    // Create session branch
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let session_branch = format!("rloop-all-{timestamp}");
     create_session_branch(repo, &session_branch)
         .with_context(|| format!("failed to create session branch {session_branch}"))?;
 

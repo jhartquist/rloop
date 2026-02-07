@@ -65,7 +65,8 @@ impl StepExecutor for MockExecutor {
             output_tokens: 2000,
             cache_read_tokens: 1000,
             cache_creation_tokens: 500,
-            cc_session_id: None,
+            model_id: Some("claude-haiku-4-5-20251001".into()),
+            cc_session_id: Some("mock-session-id".into()),
             events: vec![],
         })
     }
@@ -551,6 +552,54 @@ async fn session_log_contains_metric_events() {
         .filter(|e| matches!(e, Event::SessionSummary { .. }))
         .collect();
     assert_eq!(session_summaries.len(), 1, "one session summary");
+
+    // Should contain SessionBanner event
+    let banners: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::SessionBanner { .. }))
+        .collect();
+    assert_eq!(banners.len(), 1, "one session banner");
+
+    // Verify banner fields
+    if let Event::SessionBanner {
+        session_id,
+        datetime,
+        target,
+        parent_branch,
+        session_branch,
+    } = &banners[0]
+    {
+        assert_eq!(session_id, &result.session_id);
+        assert!(!datetime.is_empty(), "datetime should be non-empty");
+        assert_eq!(*target, TaskId(1));
+        assert_eq!(parent_branch, "main");
+        assert!(session_branch.contains("rloop-"));
+    } else {
+        panic!("expected SessionBanner event");
+    }
+
+    // Should contain StepStarted events (one per step)
+    let step_starts: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::StepStarted { .. }))
+        .collect();
+    assert_eq!(step_starts.len(), 2, "one step start per task");
+
+    // Verify step start fields
+    if let Event::StepStarted {
+        task_id,
+        attempt,
+        model_id,
+        cc_session_id,
+    } = &step_starts[0]
+    {
+        assert_eq!(*task_id, TaskId(0));
+        assert_eq!(*attempt, 1);
+        assert!(!model_id.is_empty());
+        assert!(!cc_session_id.is_empty());
+    } else {
+        panic!("expected StepStarted event");
+    }
 
     // Verify the session summary has correct aggregated values
     if let Event::SessionSummary {

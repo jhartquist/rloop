@@ -114,6 +114,7 @@ mod tests {
             output_tokens: 500,
             cache_read_tokens: 200,
             cache_creation_tokens: 100,
+            model_id: Some("claude-haiku-4-5-20251001".into()),
             cc_session_id: Some(format!("session-{id}")),
             events: vec![],
         }
