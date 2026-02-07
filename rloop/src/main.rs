@@ -34,20 +34,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum TaskAction {
-    /// Create a new task file
+    /// Create new task(s) from a rough description via LLM enhancement
     New {
-        /// Task description (becomes the markdown body)
+        /// Rough description of what to build (LLM will refine into task specs)
         description: String,
-        /// Short descriptive title for the task
-        #[arg(long)]
-        title: Option<String>,
-        /// Model to use (Haiku, Sonnet, Opus)
+        /// Model for the enhancement query (overrides config `enhance_model`)
         #[arg(long)]
         model: Option<ModelArg>,
-        /// Task IDs this task depends on
+        /// Additional dependency task IDs applied to all created tasks
         #[arg(long = "depends-on", value_delimiter = ',')]
         depends_on: Vec<u32>,
-        /// Verification command(s)
+        /// Verification command(s) applied to all created tasks
         #[arg(long)]
         verification: Vec<String>,
     },
@@ -106,7 +103,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Task { action } => match action {
             TaskAction::New {
                 description,
-                title,
                 model,
                 depends_on,
                 verification,
@@ -115,13 +111,14 @@ async fn main() -> anyhow::Result<()> {
                 let rloop_dir = repo.join(".rloop");
                 let config = rloop::config::load_config(&rloop_dir)?;
                 cmd_task_new(
+                    &repo,
                     &description,
-                    title.as_deref(),
                     model,
                     &depends_on,
                     &verification,
                     &config,
                 )
+                .await
             }
             TaskAction::Show { id } => cmd_task_show(id),
             TaskAction::List => cmd_list(),
@@ -256,69 +253,273 @@ fn cleanup_worktrees(repo: &std::path::Path) {
     }
 }
 
-fn cmd_task_new(
+/// Structured output from the LLM enhancement query.
+#[derive(serde::Deserialize)]
+struct EnhancedTasks {
+    tasks: Vec<EnhancedTask>,
+}
+
+#[derive(serde::Deserialize)]
+struct EnhancedTask {
+    title: String,
+    description: String,
+    depends_on: Vec<u32>,
+    model: String,
+}
+
+/// Build the structured output schema for `EnhancedTasks`.
+fn enhanced_tasks_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string", "description": "Short descriptive title" },
+                            "description": { "type": "string", "description": "Full markdown task description with acceptance criteria" },
+                            "depends_on": {
+                                "type": "array",
+                                "items": { "type": "integer" },
+                                "description": "Task IDs this task depends on"
+                            },
+                            "model": {
+                                "type": "string",
+                                "enum": ["Haiku", "Sonnet", "Opus"],
+                                "description": "Model to use for execution"
+                            }
+                        },
+                        "required": ["title", "description", "depends_on", "model"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        }
+    })
+}
+
+/// Build the prompt for the LLM enhancement query.
+fn build_enhance_prompt(
     description: &str,
-    title: Option<&str>,
+    existing_tasks: &[rloop::task::Task],
+    extra_depends_on: &[u32],
+    verification: &[String],
+    next_id: u32,
+) -> String {
+    use std::fmt::Write;
+
+    let mut prompt = String::from(
+        "You are a task planning assistant for rloop, a DAG-based task executor. \
+         Your job is to take a rough description and produce one or more well-structured task specs.\n\n\
+         Use the Read, Glob, and Grep tools to explore the codebase and understand the project \
+         before generating tasks. This helps you write precise, actionable task descriptions.\n\n",
+    );
+
+    if !existing_tasks.is_empty() {
+        prompt.push_str("## Existing tasks\n\n");
+        for task in existing_tasks {
+            let status = if task.completed { "done" } else { "todo" };
+            let deps: Vec<String> = task.depends_on.iter().map(ToString::to_string).collect();
+            let dep_str = if deps.is_empty() {
+                String::new()
+            } else {
+                format!(" depends_on=[{}]", deps.join(","))
+            };
+            writeln!(
+                prompt,
+                "- {id}: {title} [{status}]{dep_str}",
+                id = task.id,
+                title = if task.title.is_empty() {
+                    "(untitled)"
+                } else {
+                    &task.title
+                },
+            )
+            .expect("write to String never fails");
+        }
+        prompt.push('\n');
+    }
+
+    writeln!(
+        prompt,
+        "## Request\n\n{description}\n\n\
+         ## Instructions\n\n\
+         Generate one or more tasks from the request above. For each task provide:\n\
+         - **title**: short descriptive title\n\
+         - **description**: full markdown body with context and acceptance criteria\n\
+         - **depends_on**: task IDs this depends on (from existing tasks or other new tasks you create)\n\
+         - **model**: which model to use (Haiku for simple, Sonnet for moderate, Opus for complex)\n\n\
+         New tasks will be assigned sequential IDs starting at {next_id}. \
+         If you create multiple tasks that depend on each other, reference the new IDs.\n",
+    )
+    .expect("write to String never fails");
+
+    if !extra_depends_on.is_empty() {
+        let deps: Vec<String> = extra_depends_on.iter().map(ToString::to_string).collect();
+        writeln!(
+            prompt,
+            "All tasks must include these additional dependencies: [{}]\n",
+            deps.join(", ")
+        )
+        .expect("write to String never fails");
+    }
+
+    if !verification.is_empty() {
+        let cmds = verification.join("; ");
+        writeln!(prompt, "All tasks will use this verification: \"{cmds}\"\n",)
+            .expect("write to String never fails");
+    }
+
+    prompt
+}
+
+/// Build a task file content string from an `EnhancedTask`.
+fn build_task_file(
+    id: u32,
+    task: &EnhancedTask,
+    extra_depends_on: &[u32],
+    verification: &[String],
+) -> String {
+    use std::fmt::Write;
+
+    let mut fm = format!("---\nid: {id}\n");
+
+    if !task.title.is_empty() {
+        writeln!(fm, "title: {}", task.title).expect("write to String never fails");
+    }
+
+    writeln!(fm, "model: {}", task.model).expect("write to String never fails");
+
+    // Merge task deps with extra CLI deps, dedup
+    let mut all_deps: Vec<u32> = task.depends_on.clone();
+    for &dep in extra_depends_on {
+        if !all_deps.contains(&dep) {
+            all_deps.push(dep);
+        }
+    }
+    if !all_deps.is_empty() {
+        let deps: Vec<String> = all_deps.iter().map(ToString::to_string).collect();
+        writeln!(fm, "depends_on: [{}]", deps.join(", ")).expect("write to String never fails");
+    }
+
+    if !verification.is_empty() {
+        if verification.len() == 1 {
+            writeln!(fm, "verification: \"{}\"", verification[0])
+                .expect("write to String never fails");
+        } else {
+            let quoted: Vec<String> = verification.iter().map(|v| format!("\"{v}\"")).collect();
+            writeln!(fm, "verification: [{}]", quoted.join(", "))
+                .expect("write to String never fails");
+        }
+    }
+
+    fm.push_str("completed: false\n---\n");
+
+    format!("{fm}\n{}\n", task.description)
+}
+
+async fn cmd_task_new(
+    repo: &std::path::Path,
+    description: &str,
     model: Option<ModelArg>,
     depends_on: &[u32],
     verification: &[String],
     config: &rloop::config::Config,
 ) -> anyhow::Result<()> {
-    use std::fmt::Write;
-
-    let repo = std::env::current_dir()?;
     let tasks_dir = repo.join(".rloop").join("tasks");
     std::fs::create_dir_all(&tasks_dir)?;
 
-    let next_id = next_task_id(&tasks_dir)?;
-    let filename = format!("{next_id:02}.md");
+    // Load existing tasks for context
+    let existing_tasks = if tasks_dir.exists() {
+        rloop::task::load_all_tasks(&tasks_dir)?
+    } else {
+        vec![]
+    };
 
-    let model_str = model.map_or_else(
-        || config.task.enhance_model.to_string(),
-        |m| m.0.to_string(),
+    let next_id = existing_tasks.last().map_or(0, |t| t.id.0 + 1);
+
+    // Build and run the LLM enhancement query
+    let enhance_model = model.map_or(config.task.enhance_model, |m| m.0);
+
+    let prompt = build_enhance_prompt(
+        description,
+        &existing_tasks,
+        depends_on,
+        verification,
+        next_id,
     );
 
-    let mut frontmatter = format!("---\nid: {next_id}\n");
+    eprintln!("Enhancing task description with {enhance_model}...");
 
-    if let Some(t) = title {
-        writeln!(frontmatter, "title: {t}").expect("write to String never fails");
-    }
-
-    writeln!(frontmatter, "model: {model_str}").expect("write to String never fails");
-
-    if !depends_on.is_empty() {
-        let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
-        writeln!(frontmatter, "depends_on: [{}]", deps.join(", "))
-            .expect("write to String never fails");
-    }
-
-    if !verification.is_empty() {
-        if verification.len() == 1 {
-            writeln!(frontmatter, "verification: \"{}\"", verification[0])
-                .expect("write to String never fails");
-        } else {
-            let quoted: Vec<String> = verification.iter().map(|v| format!("\"{v}\"")).collect();
-            writeln!(frontmatter, "verification: [{}]", quoted.join(", "))
-                .expect("write to String never fails");
-        }
-    }
-
-    frontmatter.push_str("completed: false\n---\n");
-
-    let content = format!("{frontmatter}\n{description}\n");
-    let path = tasks_dir.join(&filename);
-    std::fs::write(&path, content)?;
-
-    let path_str = path.to_str().context("non-UTF-8 task path")?;
-    rloop::git::git(&repo, &["add", path_str])?;
-
-    let commit_msg = match title {
-        Some(t) => format!("task: add {next_id:02} - {t}"),
-        None => format!("task: add {next_id:02}"),
+    let query_config = rloop::query::QueryConfig {
+        model: enhance_model,
+        cwd: repo.to_path_buf(),
+        tools: vec![
+            rloop::tool::BuiltinTool::Read,
+            rloop::tool::BuiltinTool::Glob,
+            rloop::tool::BuiltinTool::Grep,
+        ],
+        output_format: Some(enhanced_tasks_schema()),
     };
-    rloop::git::git(&repo, &["commit", "-m", &commit_msg])?;
 
-    eprintln!("Created task {next_id:02} at {}", path.display());
+    let result = rloop::query::run_query(&prompt, &query_config).await?;
+
+    let output = result
+        .structured_output
+        .context("LLM query did not return structured output")?;
+    let enhanced: EnhancedTasks =
+        serde_json::from_value(output).context("failed to parse enhanced tasks from LLM output")?;
+
+    if enhanced.tasks.is_empty() {
+        anyhow::bail!("LLM returned no tasks");
+    }
+
+    // Write task files
+    let mut created_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut created_ids: Vec<(u32, String)> = Vec::new();
+
+    for (i, task) in enhanced.tasks.iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        let id = next_id + i as u32;
+        let filename = format!("{id:02}.md");
+        let content = build_task_file(id, task, depends_on, verification);
+        let path = tasks_dir.join(&filename);
+        std::fs::write(&path, &content)?;
+        created_paths.push(path);
+        created_ids.push((id, task.title.clone()));
+    }
+
+    // Git add all new files and commit
+    let path_strs: Vec<&str> = created_paths
+        .iter()
+        .map(|p| p.to_str().context("non-UTF-8 task path"))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut add_args = vec!["add"];
+    add_args.extend_from_slice(&path_strs);
+    rloop::git::git(repo, &add_args)?;
+
+    let commit_msg = if created_ids.len() == 1 {
+        let (id, ref title) = created_ids[0];
+        format!("task: add {id:02} - {title}")
+    } else {
+        let ids: Vec<String> = created_ids
+            .iter()
+            .map(|(id, _)| format!("{id:02}"))
+            .collect();
+        format!("task: add {}", ids.join(", "))
+    };
+    rloop::git::git(repo, &["commit", "-m", &commit_msg])?;
+
+    // Print summary
+    eprintln!("\nCreated {} task(s):", created_ids.len());
+    for (id, title) in &created_ids {
+        eprintln!("  {id:02} - {title}");
+    }
+
     Ok(())
 }
 
@@ -373,14 +574,6 @@ fn cmd_task_show(id: u32) -> anyhow::Result<()> {
     print!("{}", task.description);
 
     Ok(())
-}
-
-fn next_task_id(tasks_dir: &std::path::Path) -> anyhow::Result<u32> {
-    if !tasks_dir.exists() {
-        return Ok(0);
-    }
-    let tasks = rloop::task::load_all_tasks(tasks_dir)?;
-    Ok(tasks.last().map_or(0, |t| t.id.0 + 1))
 }
 
 fn cmd_list() -> anyhow::Result<()> {
