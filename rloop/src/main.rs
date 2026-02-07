@@ -48,6 +48,24 @@ enum TaskAction {
         #[arg(long)]
         verification: Vec<String>,
     },
+    /// Add a task from explicit fields (no LLM, deterministic)
+    Add {
+        /// Short descriptive title (required)
+        #[arg(long)]
+        title: String,
+        /// Task body/description (reads from stdin if omitted)
+        #[arg(long)]
+        body: Option<String>,
+        /// Model for execution (default: Sonnet)
+        #[arg(long)]
+        model: Option<ModelArg>,
+        /// Dependency task IDs
+        #[arg(long = "depends-on", value_delimiter = ',')]
+        depends_on: Vec<u32>,
+        /// Verification command(s)
+        #[arg(long)]
+        verification: Vec<String>,
+    },
     /// Show full details of a task
     Show {
         /// Task ID to show (e.g., 3 for task 03)
@@ -119,6 +137,23 @@ async fn main() -> anyhow::Result<()> {
                     &config,
                 )
                 .await
+            }
+            TaskAction::Add {
+                title,
+                body,
+                model,
+                depends_on,
+                verification,
+            } => {
+                let repo = std::env::current_dir()?;
+                cmd_task_add(
+                    &repo,
+                    &title,
+                    body.as_deref(),
+                    model,
+                    &depends_on,
+                    &verification,
+                )
             }
             TaskAction::Show { id } => cmd_task_show(id),
             TaskAction::List => cmd_list(),
@@ -419,6 +454,81 @@ fn build_task_file(
     fm.push_str("completed: false\n---\n");
 
     format!("{fm}\n{}\n", task.description)
+}
+
+fn cmd_task_add(
+    repo: &std::path::Path,
+    title: &str,
+    body: Option<&str>,
+    model: Option<ModelArg>,
+    depends_on: &[u32],
+    verification: &[String],
+) -> anyhow::Result<()> {
+    use std::fmt::Write;
+
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir)?;
+
+    let existing_tasks = if tasks_dir.exists() {
+        rloop::task::load_all_tasks(&tasks_dir)?
+    } else {
+        vec![]
+    };
+
+    let id = existing_tasks.last().map_or(0, |t| t.id.0 + 1);
+
+    // Read body from stdin if not provided via --body
+    let description = if let Some(b) = body {
+        b.to_string()
+    } else {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("failed to read task body from stdin")?;
+        buf
+    };
+
+    // Build frontmatter
+    let model_name = model.map_or(rloop::model::Model::Sonnet, |m| m.0);
+
+    let mut fm = format!("---\nid: {id}\ntitle: {title}\nmodel: {model_name}\n");
+
+    if !depends_on.is_empty() {
+        let deps: Vec<String> = depends_on.iter().map(ToString::to_string).collect();
+        writeln!(fm, "depends_on: [{}]", deps.join(", ")).expect("write to String never fails");
+    }
+
+    if !verification.is_empty() {
+        if verification.len() == 1 {
+            writeln!(fm, "verification: \"{}\"", verification[0])
+                .expect("write to String never fails");
+        } else {
+            let quoted: Vec<String> = verification.iter().map(|v| format!("\"{v}\"")).collect();
+            writeln!(fm, "verification: [{}]", quoted.join(", "))
+                .expect("write to String never fails");
+        }
+    }
+
+    fm.push_str("completed: false\n---\n");
+
+    let content = format!("{fm}\n{description}");
+
+    // Write file
+    let filename = format!("{id:02}.md");
+    let path = tasks_dir.join(&filename);
+    std::fs::write(&path, &content)?;
+
+    // Git add + commit
+    let path_str = path.to_str().context("non-UTF-8 task path")?;
+    rloop::git::git(repo, &["add", path_str])?;
+
+    let commit_msg = format!("task: add {id:02} - {title}");
+    rloop::git::git(repo, &["commit", "-m", &commit_msg])?;
+
+    eprintln!("Created task {id:02}: {title}");
+
+    Ok(())
 }
 
 async fn cmd_task_new(
