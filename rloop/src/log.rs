@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
@@ -201,6 +201,105 @@ impl SessionLogger {
             }
         }
     }
+}
+
+/// Load events from a JSONL session log file.
+///
+/// Each line is parsed as a JSON-encoded `Event`. Lines that fail to parse
+/// are skipped with a warning logged to stderr (including line number and content).
+///
+/// # Errors
+/// Returns an error if the file cannot be opened or read.
+pub fn load_events(path: impl AsRef<Path>) -> anyhow::Result<Vec<Event>> {
+    let path = path.as_ref();
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut events = Vec::new();
+
+    for (line_number, line_result) in reader.lines().enumerate() {
+        let line_number = line_number + 1; // 1-based
+        let line = match line_result {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read line {line_number} in {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<Event>(&line) {
+            Ok(event) => events.push(event),
+            Err(e) => {
+                eprintln!(
+                    "warning: skipping corrupt line {line_number} in {}: {e} — content: {line}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    Ok(events)
+}
+
+/// Write data to a file, creating a `.bak` backup of any existing file first.
+///
+/// If the target file exists, it is copied to `{path}.bak` before being overwritten.
+/// The write is performed atomically via a temporary file and rename to reduce the
+/// risk of data loss from partial writes.
+///
+/// # Errors
+/// Returns an error if backup creation, temp file writing, or rename fails.
+pub fn write_with_backup(path: impl AsRef<Path>, data: &[u8]) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    let backup_path = path.with_extension(path.extension().map_or_else(
+        || "bak".to_string(),
+        |ext| format!("{}.bak", ext.to_string_lossy()),
+    ));
+
+    // Back up existing file
+    if path.exists() {
+        fs::copy(path, &backup_path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to create backup {} -> {}: {e}",
+                path.display(),
+                backup_path.display()
+            )
+        })?;
+    }
+
+    // Write to a temporary file in the same directory, then rename for atomicity
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let tmp_path = parent.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string())
+    ));
+
+    fs::write(&tmp_path, data)
+        .map_err(|e| anyhow::anyhow!("failed to write temp file {}: {e}", tmp_path.display()))?;
+
+    fs::rename(&tmp_path, path).map_err(|e| {
+        // Clean up temp file on rename failure
+        if let Err(cleanup_err) = fs::remove_file(&tmp_path) {
+            eprintln!(
+                "warning: failed to clean up temp file {}: {cleanup_err}",
+                tmp_path.display()
+            );
+        }
+        anyhow::anyhow!(
+            "failed to rename {} -> {}: {e}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 /// Rich terminal printer for Claude stream events.
@@ -714,5 +813,170 @@ mod tests {
             }
             other => panic!("Expected TokenUsage, got {other:?}"),
         }
+    }
+
+    // --- load_events tests ---
+
+    #[test]
+    fn load_events_valid_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut logger = SessionLogger::new(dir.path(), SessionId("session".into())).unwrap();
+        logger
+            .log(&Event::TaskStarted { task_id: TaskId(0) })
+            .unwrap();
+        logger
+            .log(&Event::TaskCompleted {
+                task_id: TaskId(0),
+                summary: "done".into(),
+            })
+            .unwrap();
+        logger.log(&Event::SessionCancelled).unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], Event::TaskStarted { task_id } if *task_id == TaskId(0)));
+        assert!(matches!(&events[2], Event::SessionCancelled));
+    }
+
+    #[test]
+    fn load_events_skips_corrupt_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.jsonl");
+
+        let valid = serde_json::to_string(&Event::SessionCancelled).unwrap();
+        let content = format!("{valid}\nnot valid json\n{valid}\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn load_events_all_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.jsonl");
+        std::fs::write(&path, "garbage\n{bad json}\nmore garbage\n").unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn load_events_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn load_events_blank_lines_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blanks.jsonl");
+
+        let valid = serde_json::to_string(&Event::SessionCancelled).unwrap();
+        let content = format!("\n{valid}\n\n{valid}\n\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn load_events_missing_file() {
+        let result = load_events("/nonexistent/path/session.jsonl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_events_partial_write_recovery() {
+        // Simulates a crash mid-write: valid lines followed by a truncated JSON line
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.jsonl");
+
+        let valid = serde_json::to_string(&Event::TaskStarted { task_id: TaskId(1) }).unwrap();
+        let truncated = r#"{"type":"TaskCompleted","task_id":2,"summ"#;
+        let content = format!("{valid}\n{truncated}\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::TaskStarted { task_id } if *task_id == TaskId(1)));
+    }
+
+    // --- write_with_backup tests ---
+
+    #[test]
+    fn write_with_backup_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+
+        write_with_backup(&path, b"hello").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+        // No backup should exist for a new file
+        assert!(!dir.path().join("data.json.bak").exists());
+    }
+
+    #[test]
+    fn write_with_backup_creates_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+
+        std::fs::write(&path, "original").unwrap();
+        write_with_backup(&path, b"updated").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated");
+        let backup = dir.path().join("data.json.bak");
+        assert!(backup.exists());
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+    }
+
+    #[test]
+    fn write_with_backup_overwrites_previous_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+
+        std::fs::write(&path, "v1").unwrap();
+        write_with_backup(&path, b"v2").unwrap();
+        write_with_backup(&path, b"v3").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v3");
+        let backup = dir.path().join("data.json.bak");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "v2");
+    }
+
+    #[test]
+    fn write_with_backup_no_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("TASKS");
+
+        std::fs::write(&path, "original").unwrap();
+        write_with_backup(&path, b"updated").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated");
+        let backup = dir.path().join("TASKS.bak");
+        assert!(backup.exists());
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+    }
+
+    #[test]
+    fn write_with_backup_restores_from_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.json");
+
+        // Write original
+        std::fs::write(&path, "important data").unwrap();
+        // Overwrite with backup
+        write_with_backup(&path, b"new data").unwrap();
+
+        // Simulate restore from backup
+        let backup = dir.path().join("store.json.bak");
+        assert!(backup.exists());
+        let restored = std::fs::read_to_string(&backup).unwrap();
+        std::fs::write(&path, &restored).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "important data");
     }
 }
