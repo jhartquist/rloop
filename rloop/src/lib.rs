@@ -5,6 +5,7 @@ pub mod git;
 pub mod lock;
 pub mod log;
 pub mod model;
+pub mod query;
 pub mod session;
 pub mod step;
 pub mod task;
