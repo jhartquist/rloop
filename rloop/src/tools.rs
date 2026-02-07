@@ -8,6 +8,26 @@ use serde_json::json;
 
 use crate::task::VerificationCommands;
 
+/// Create a `ToolResult` indicating an error (`is_error` = true).
+fn tool_err(message: impl Into<String>) -> ToolResult {
+    ToolResult {
+        content: vec![McpToolResultContent::Text {
+            text: message.into(),
+        }],
+        is_error: true,
+    }
+}
+
+/// Create a `ToolResult` indicating success (`is_error` = false).
+fn tool_ok(message: impl Into<String>) -> ToolResult {
+    ToolResult {
+        content: vec![McpToolResultContent::Text {
+            text: message.into(),
+        }],
+        is_error: false,
+    }
+}
+
 /// Shared state from the `complete` tool, readable by the caller after the session.
 pub struct ToolState {
     /// Summary provided by the agent when calling `complete`.
@@ -99,32 +119,28 @@ fn build_complete_tool(
             let cmds = verification.clone();
             let dir = worktree_path.clone();
             async move {
-                let text = args
-                    .get("summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(no summary provided)")
-                    .to_string();
+                // Validate required field: summary must be present and non-empty.
+                let text = match args.get("summary").and_then(|v| v.as_str()) {
+                    Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+                    _ => {
+                        return Ok(tool_err(
+                            "Invalid input: 'summary' is required and must be a non-empty string.",
+                        ));
+                    }
+                };
 
                 // Run verification if configured
                 if let Some(ref v) = cmds
                     && let Err(msg) = run_verification(&v.0, &dir)
                 {
-                    return Ok(ToolResult {
-                        content: vec![McpToolResultContent::Text { text: msg }],
-                        is_error: true,
-                    });
+                    return Ok(tool_err(msg));
                 }
 
                 // Verification passed (or none configured) -- accept completion
-                *summary_ref.lock().unwrap() = Some(text);
+                *summary_ref.lock().expect("summary lock poisoned") = Some(text);
                 stop_ref.store(true, Ordering::SeqCst);
 
-                Ok(ToolResult {
-                    content: vec![McpToolResultContent::Text {
-                        text: "Task complete.".into(),
-                    }],
-                    is_error: false,
-                })
+                Ok(tool_ok("Task complete."))
             }
         }
     )
@@ -147,12 +163,7 @@ fn build_context_usage_tool() -> claude_agent_sdk_rs::SdkMcpTool {
                     "recommendation": "tracking not yet implemented"
                 });
 
-                Ok(ToolResult {
-                    content: vec![McpToolResultContent::Text {
-                        text: response.to_string(),
-                    }],
-                    is_error: false,
-                })
+                Ok(tool_ok(response.to_string()))
             }
         }
     )

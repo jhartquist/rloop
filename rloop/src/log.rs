@@ -307,11 +307,11 @@ impl StreamPrinter {
         if name == "Read"
             && let Some(file) = output.get("file")
         {
-            let path = file
-                .get("filePath")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let num_lines = file.get("numLines").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let path = file.get("filePath").and_then(|v| v.as_str()).unwrap_or("?");
+            let num_lines = file
+                .get("numLines")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             eprintln!(
                 "{label}  {}",
                 format!("{} ({num_lines} lines)", self.rel(path)).dimmed()
