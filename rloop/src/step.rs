@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -238,106 +238,110 @@ fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Messag
 /// Extract a `TokenUsage` event from a Claude SDK usage JSON value.
 fn extract_token_usage(usage: &serde_json::Value) -> Event {
     Event::TokenUsage {
-        input_tokens: usage
-            .get("input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        cache_read_input_tokens: usage
-            .get("cache_read_input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
-        cache_creation_input_tokens: usage
-            .get("cache_creation_input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
+        input_tokens: get_u64(usage, "input_tokens"),
+        output_tokens: get_u64(usage, "output_tokens"),
+        cache_read_input_tokens: get_u64(usage, "cache_read_input_tokens"),
+        cache_creation_input_tokens: get_u64(usage, "cache_creation_input_tokens"),
     }
 }
 
-/// Compute a context usage percentage from cumulative token counts.
-///
-/// Uses a 200k token context window as the baseline (Claude's typical window).
-/// Returns the percentage and a human-readable recommendation.
-fn compute_context_usage(total_input: u64, total_output: u64) -> Event {
-    // Claude models typically have a 200k token context window.
-    const CONTEXT_WINDOW: f64 = 200_000.0;
+/// Claude models typically have a 200k token context window.
+const CONTEXT_WINDOW: f64 = 200_000.0;
 
-    #[allow(clippy::cast_precision_loss)] // token counts fit comfortably in f64 mantissa
-    let used = (total_input + total_output) as f64;
-    #[allow(clippy::cast_possible_truncation)]
-    let percentage = ((used / CONTEXT_WINDOW) * 100.0) as f32;
-
-    let recommendation = if percentage < 50.0 {
-        "plenty of room".to_string()
-    } else if percentage < 70.0 {
-        "getting full, consider wrapping up".to_string()
-    } else if percentage < 90.0 {
-        "running low, wrap up soon".to_string()
-    } else {
-        "critical, finish immediately".to_string()
-    };
-
-    Event::ContextUsage {
-        percentage,
-        recommendation,
-    }
-}
-
-/// Extract token usage and context percentage events from a Result message's usage data.
-fn extract_result_usage(usage: &serde_json::Value) -> Vec<Event> {
-    let mut events = Vec::with_capacity(2);
-
-    events.push(extract_token_usage(usage));
-
-    let total_input = usage
-        .get("input_tokens")
+/// Extract a u64 from a JSON value by key, defaulting to 0.
+fn get_u64(value: &serde_json::Value, key: &str) -> u64 {
+    value
+        .get(key)
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0)
-        + usage
-            .get("cache_read_input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-        + usage
-            .get("cache_creation_input_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-    let total_output = usage
-        .get("output_tokens")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-
-    events.push(compute_context_usage(total_input, total_output));
-    events
 }
 
-/// Accumulated token counts from processing the Claude response stream.
+/// Tracks context window usage from the most recent assistant message.
+///
+/// Uses message ID deduplication to avoid counting duplicate content blocks
+/// from the same API turn (the SDK sends one `Message::Assistant` per content block).
+/// Context percentage is based on the input side only — per-turn output tokens
+/// are unreliable placeholders in the SDK.
+struct ContextTracker {
+    last_message_id: Option<String>,
+    last_percentage: f32,
+    /// Thresholds that have already been crossed and printed.
+    thresholds_crossed: [bool; 3], // 50%, 70%, 90%
+}
+
+/// Context usage thresholds for terminal alerts.
+const CONTEXT_THRESHOLDS: [(usize, f32, &str); 3] = [
+    (0, 50.0, "50% context used — getting full"),
+    (1, 70.0, "70% context used — wrap up soon"),
+    (2, 90.0, "90% context used — critical, finish immediately"),
+];
+
+impl ContextTracker {
+    fn new() -> Self {
+        Self {
+            last_message_id: None,
+            last_percentage: 0.0,
+            thresholds_crossed: [false; 3],
+        }
+    }
+
+    /// Update from an assistant message. Returns `true` if this was a new turn
+    /// (not a duplicate content block from the same API call).
+    fn update(&mut self, message_id: Option<&str>, usage: &serde_json::Value) -> bool {
+        // Deduplicate by message ID — the SDK sends one Message::Assistant per
+        // content block, all sharing the same message ID within a turn.
+        if let Some(id) = message_id {
+            if self.last_message_id.as_deref() == Some(id) {
+                return false;
+            }
+            self.last_message_id = Some(id.to_string());
+        }
+
+        let input = get_u64(usage, "input_tokens");
+        let cache_read = get_u64(usage, "cache_read_input_tokens");
+        let cache_create = get_u64(usage, "cache_creation_input_tokens");
+        let output = get_u64(usage, "output_tokens");
+
+        #[allow(clippy::cast_precision_loss)]
+        let used = (input + cache_read + cache_create + output) as f64;
+        #[allow(clippy::cast_possible_truncation)]
+        let pct = ((used / CONTEXT_WINDOW) * 100.0) as f32;
+        self.last_percentage = pct;
+        true
+    }
+
+    fn percentage(&self) -> f32 {
+        self.last_percentage
+    }
+
+    /// Check if any new thresholds have been crossed. Returns events for
+    /// newly-crossed thresholds (printed to terminal for the human watching).
+    fn check_thresholds(&mut self) -> Vec<Event> {
+        let mut events = Vec::new();
+        for &(idx, threshold, recommendation) in &CONTEXT_THRESHOLDS {
+            if !self.thresholds_crossed[idx] && self.last_percentage >= threshold {
+                self.thresholds_crossed[idx] = true;
+                events.push(Event::ContextUsage {
+                    percentage: self.last_percentage,
+                    recommendation: recommendation.to_string(),
+                });
+            }
+        }
+        events
+    }
+}
+
+/// Final token counts populated from the Result message.
+///
+/// We do NOT accumulate per-turn values (they require deduplication and have
+/// unreliable output counts). The Result message has authoritative billing totals.
 #[derive(Clone, Debug, Default)]
 #[allow(clippy::struct_field_names)]
-struct TokenAccumulator {
+struct TokenTotals {
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
-}
-
-impl TokenAccumulator {
-    fn add_from_event(&mut self, event: &Event) {
-        if let Event::TokenUsage {
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens,
-            cache_creation_input_tokens,
-        } = event
-        {
-            self.input_tokens += input_tokens;
-            self.output_tokens += output_tokens;
-            self.cache_read_tokens += cache_read_input_tokens;
-            self.cache_creation_tokens += cache_creation_input_tokens;
-        }
-    }
 }
 
 /// Collected data from processing the Claude response stream.
@@ -346,22 +350,25 @@ struct StreamData {
     model_id: Option<String>,
     result_message: Option<Message>,
     events: Vec<Event>,
-    tokens: TokenAccumulator,
+    tokens: TokenTotals,
 }
 
 /// Process the Claude response stream: collect events, print to terminal, handle interrupts.
+#[allow(clippy::too_many_lines)]
 async fn process_stream(
     client: &mut ClaudeClient,
     stop: &std::sync::atomic::AtomicBool,
+    context_pct: &AtomicU32,
     worktree_path: &Path,
 ) -> anyhow::Result<StreamData> {
     let mut cc_session_id: Option<String> = None;
     let mut model_id: Option<String> = None;
     let mut result_message: Option<Message> = None;
     let mut events: Vec<Event> = Vec::new();
-    let mut tokens = TokenAccumulator::default();
+    let mut tokens = TokenTotals::default();
     let mut interrupted = false;
     let mut printer = StreamPrinter::new(worktree_path);
+    let mut context_tracker = ContextTracker::new();
 
     let mut stream = client.receive_response();
     while let Some(result) = stream.next().await {
@@ -395,12 +402,22 @@ async fn process_stream(
                     }
                 }
 
-                // Extract per-message token usage
+                // Update context tracker from per-message usage (deduplicated by message ID).
                 if let Some(usage) = &m.message.usage {
                     let event = extract_token_usage(usage);
-                    tokens.add_from_event(&event);
                     printer.print(&event);
                     events.push(event);
+
+                    if context_tracker.update(m.message.id.as_deref(), usage) {
+                        // New turn — update the shared atomic for the context_usage tool.
+                        context_pct.store(context_tracker.percentage().to_bits(), Ordering::SeqCst);
+
+                        // Check for threshold crossings and emit events for the human.
+                        for threshold_event in context_tracker.check_thresholds() {
+                            printer.print(&threshold_event);
+                            events.push(threshold_event);
+                        }
+                    }
                 }
             }
             Message::User(user) => {
@@ -432,12 +449,15 @@ async fn process_stream(
                 }
             }
             Message::Result(res) => {
+                // Result message has authoritative billing totals — use these directly.
                 if let Some(usage) = &res.usage {
-                    for event in extract_result_usage(usage) {
-                        tokens.add_from_event(&event);
-                        printer.print(&event);
-                        events.push(event);
-                    }
+                    let event = extract_token_usage(usage);
+                    tokens.input_tokens = get_u64(usage, "input_tokens");
+                    tokens.output_tokens = get_u64(usage, "output_tokens");
+                    tokens.cache_read_tokens = get_u64(usage, "cache_read_input_tokens");
+                    tokens.cache_creation_tokens = get_u64(usage, "cache_creation_input_tokens");
+                    printer.print(&event);
+                    events.push(event);
                 }
                 result_message = Some(msg.clone());
             }
@@ -488,6 +508,7 @@ pub async fn execute_step(
     );
     let summary = tools.state.summary;
     let stop = tools.state.stop;
+    let context_pct = tools.state.context_pct;
 
     let mut servers = HashMap::new();
     servers.insert("rloop".to_string(), McpServerConfig::Sdk(tools.server));
@@ -523,7 +544,7 @@ pub async fn execute_step(
         .context("failed to send prompt to Claude")?;
 
     // 7. Stream and collect events
-    let mut data = process_stream(&mut client, &stop, worktree_path).await?;
+    let mut data = process_stream(&mut client, &stop, &context_pct, worktree_path).await?;
     // Best-effort disconnect — session data already captured
     if let Err(e) = client.disconnect().await {
         eprintln!("warning: failed to disconnect Claude client: {e}");

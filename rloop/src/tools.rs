@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,12 +30,14 @@ fn tool_ok(message: impl Into<String>) -> ToolResult {
     }
 }
 
-/// Shared state from the `complete` tool, readable by the caller after the session.
+/// Shared state from the MCP tools, readable by the caller after the session.
 pub struct ToolState {
     /// Summary provided by the agent when calling `complete`.
     pub summary: Arc<Mutex<Option<String>>>,
     /// Set to `true` when `complete` succeeds -- signals step.rs to interrupt the stream.
     pub stop: Arc<AtomicBool>,
+    /// Current context usage percentage, stored as f32 bits in a u32 for atomic access.
+    pub context_pct: Arc<AtomicU32>,
 }
 
 /// The MCP server config and its associated shared state.
@@ -58,6 +60,7 @@ pub fn create_tools(
     let worktree_path = worktree_path.as_ref();
     let summary: Arc<Mutex<Option<String>>> = Arc::default();
     let stop: Arc<AtomicBool> = Arc::default();
+    let context_pct: Arc<AtomicU32> = Arc::default();
 
     let timeout = if timeout_seconds == 0 {
         None
@@ -72,13 +75,17 @@ pub fn create_tools(
         Arc::clone(&stop),
         timeout,
     );
-    let context_usage = build_context_usage_tool();
+    let context_usage = build_context_usage_tool(Arc::clone(&context_pct));
 
     let server = create_sdk_mcp_server("rloop", "0.1.0", vec![complete, context_usage]);
 
     Tools {
         server,
-        state: ToolState { summary, stop },
+        state: ToolState {
+            summary,
+            stop,
+            context_pct,
+        },
     }
 }
 
@@ -209,7 +216,7 @@ fn build_complete_tool(
     )
 }
 
-fn build_context_usage_tool() -> claude_agent_sdk_rs::SdkMcpTool {
+fn build_context_usage_tool(context_pct: Arc<AtomicU32>) -> claude_agent_sdk_rs::SdkMcpTool {
     let schema = json!({
         "type": "object",
         "properties": {}
@@ -220,10 +227,23 @@ fn build_context_usage_tool() -> claude_agent_sdk_rs::SdkMcpTool {
         "Check how much of your context window you have used.",
         schema,
         move |_args: serde_json::Value| {
+            let pct_ref = Arc::clone(&context_pct);
             async move {
+                let percentage = f32::from_bits(pct_ref.load(Ordering::SeqCst));
+
+                let recommendation = if percentage < 50.0 {
+                    "plenty of room"
+                } else if percentage < 70.0 {
+                    "getting full, consider wrapping up"
+                } else if percentage < 90.0 {
+                    "running low, wrap up soon"
+                } else {
+                    "critical, finish immediately"
+                };
+
                 let response = json!({
-                    "percentage": 0.0,
-                    "recommendation": "tracking not yet implemented"
+                    "percentage": percentage,
+                    "recommendation": recommendation,
                 });
 
                 Ok(tool_ok(response.to_string()))
