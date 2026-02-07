@@ -25,6 +25,21 @@ deps: add serde for task file parsing
 
 Don't batch dependencies. Don't add them "in preparation" for later use.
 
+### Development Workflow
+
+Before every commit:
+
+```bash
+cargo fmt                                          # format code
+cargo clippy --all-targets -- -D warnings          # lint (must pass clean)
+```
+
+Run all checks at once from the repo root:
+
+```bash
+mise run ci    # runs fmt check + clippy + tests
+```
+
 ### Commits
 
 One logical change per commit. Small commits are better than big ones. Run `cargo fmt` before every commit. Commit regularly — after each logical change, not in large batches.
@@ -61,7 +76,7 @@ rloop/src/
 - Tests use real file I/O with `tempfile` crate. No mocks unless unavoidable.
 
 ```bash
-cargo clippy -- -W clippy::pedantic    # lint
+cargo clippy --all-targets -- -D warnings    # lint
 cargo test                              # all tests
 cargo run --example 01-parse-task       # smoke test
 ```
@@ -69,7 +84,7 @@ cargo run --example 01-parse-task       # smoke test
 ## Run
 
 ```bash
-cargo clippy -- -W clippy::pedantic
+cargo clippy --all-targets -- -D warnings
 cargo test
 cargo run --example 01-parse-task
 ```

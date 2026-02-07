@@ -1,0 +1,8 @@
+[tasks.ci]
+description = "Run fmt check, clippy, and tests"
+dir = "rloop"
+run = """
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+"""
