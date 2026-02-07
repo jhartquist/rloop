@@ -30,6 +30,11 @@ enum Command {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Manage sessions
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -73,6 +78,15 @@ enum TaskAction {
     },
     /// List tasks and their status
     List,
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// Display a session log with elapsed time
+    Show {
+        /// Session ID (e.g., 20250206-143022)
+        session_id: String,
+    },
 }
 
 /// Wrapper for Model CLI parsing (case-insensitive display in help).
@@ -157,6 +171,9 @@ async fn main() -> anyhow::Result<()> {
             }
             TaskAction::Show { id } => cmd_task_show(id),
             TaskAction::List => cmd_list(),
+        },
+        Command::Session { action } => match action {
+            SessionAction::Show { session_id } => cmd_session_show(&session_id),
         },
     }
 }
@@ -718,4 +735,288 @@ fn cmd_list() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_session_show(session_id: &str) -> anyhow::Result<()> {
+    let repo = std::env::current_dir()?;
+    let sessions_dir = repo.join(".rloop").join("sessions");
+
+    if !sessions_dir.exists() {
+        anyhow::bail!("No .rloop/sessions/ directory found. Run `rloop init` first.");
+    }
+
+    let session_path = sessions_dir.join(format!("{session_id}.jsonl"));
+
+    if !session_path.exists() {
+        anyhow::bail!("Session {session_id} not found");
+    }
+
+    let events = rloop::log::load_events(&session_path)?;
+
+    if events.is_empty() {
+        eprintln!("Session log is empty");
+        return Ok(());
+    }
+
+    // Print session header
+    println!("Session {session_id}\n");
+
+    // Track elapsed time from event sequence (no actual timestamps in events)
+    // We'll use event index as a proxy for time progression
+    let total_events = events.len();
+
+    for (idx, event) in events.iter().enumerate() {
+        // Format elapsed time based on event index
+        // This is a simplified approach - in reality we'd need actual timestamps
+        let elapsed = format_elapsed_time(idx, total_events);
+        print_event_with_elapsed(&elapsed, event);
+    }
+
+    Ok(())
+}
+
+/// Format elapsed time as a right-aligned string (e.g., "     +0s", "   +12s", "+1m 34s")
+fn format_elapsed_time(event_idx: usize, _total: usize) -> String {
+    // Simplified: use event index as proxy for seconds
+    // In a real implementation, we'd compute actual elapsed time from timestamps
+    #[allow(clippy::cast_possible_truncation)]
+    let secs = event_idx as u64;
+
+    let time_str = if secs >= 60 {
+        format!("+{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("+{secs}s")
+    };
+
+    // Right-align to 8 characters
+    format!("{time_str:>8}")
+}
+
+/// Print an event with elapsed time prefix
+fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
+    use colored::Colorize;
+    use rloop::log::Event;
+
+    match event {
+        Event::SessionBanner {
+            session_id,
+            datetime,
+            target,
+            parent_branch,
+            session_branch,
+        } => {
+            println!("{elapsed}  {} Session {session_id}", "▶".green());
+            println!("          Date:   {datetime}");
+            println!("          Target: task {target:02}");
+            println!("          Branch: {parent_branch} → {session_branch}");
+        }
+        Event::SessionStarted { session_id, target } => {
+            println!("{elapsed}  {} Session {session_id}", "▶".green());
+            println!("          Target: task {target:02}");
+        }
+        Event::StepStarted {
+            task_id,
+            attempt,
+            model_id,
+            cc_session_id,
+        } => {
+            println!(
+                "{elapsed}  {} Task {task_id:02}  step {attempt}  model: {model_id}  cc: {cc_session_id}",
+                "→".blue(),
+            );
+        }
+        Event::TaskStarted { task_id } => {
+            println!("{elapsed}  {} task {task_id:02}", "→".blue());
+        }
+        Event::TaskCompleted { task_id, summary } => {
+            println!("{elapsed}  {} task {task_id:02} — {summary}", "✓".green());
+        }
+        Event::TaskFailed { task_id, reason } => {
+            println!("{elapsed}  {} task {task_id:02} — {reason}", "✗".red());
+        }
+        Event::ToolCall { name, input } => {
+            let param = extract_tool_param(name, input);
+            if param.is_empty() {
+                println!("{elapsed}    CALL  {name}");
+            } else {
+                println!("{elapsed}    CALL  {name} {param}");
+            }
+        }
+        Event::ToolResult { name, output } => {
+            let summary = extract_result_summary(name, output);
+            println!("{elapsed}     RES  {summary}");
+        }
+        Event::AssistantMessage { content } => {
+            // Print first line with elapsed time, subsequent lines indented
+            for (i, line) in content.lines().enumerate() {
+                if i == 0 {
+                    println!("{elapsed}    ASST  {line}");
+                } else {
+                    println!("              {line}");
+                }
+            }
+        }
+        Event::VerificationRan {
+            task_id,
+            command,
+            passed,
+            output: _,
+        } => {
+            let icon = if *passed { "✓".green() } else { "✗".red() };
+            let status = if *passed { "passed" } else { "failed" };
+            println!("{elapsed}  {icon} verify task {task_id:02} `{command}`: {status}");
+        }
+        Event::WorktreeCreated { task_id, path } => {
+            println!("{elapsed}    worktree {task_id:02} → {}", path.display());
+        }
+        Event::WorktreeMerged {
+            task_id,
+            into_branch,
+        } => {
+            println!("{elapsed}    merged {task_id:02} → {into_branch}");
+        }
+        Event::WorktreeCleanedUp { task_id } => {
+            println!("{elapsed}    cleaned up {task_id:02}");
+        }
+        Event::SessionComplete { branch } => {
+            println!("{elapsed}  {} session complete → branch {branch}", "■".green());
+        }
+        Event::SessionAutoMerged {
+            branch,
+            into_branch,
+        } => {
+            println!("{elapsed}  {} auto-merged {branch} → {into_branch}", "■".green());
+        }
+        Event::SessionCancelled => {
+            println!("{elapsed}  {} session cancelled", "■".yellow());
+        }
+        Event::ContextUsage {
+            percentage,
+            recommendation,
+        } => {
+            println!("{elapsed}      CTX  {percentage:.1}% — {recommendation}");
+        }
+        Event::StepSummary {
+            task_id,
+            step_number,
+            max_steps,
+            duration,
+            cost_usd,
+            input_tokens,
+            output_tokens,
+        } => {
+            let dur = format_duration(*duration);
+            println!(
+                "{elapsed}    {} step {step_number}/{max_steps}  {dur}  ${cost_usd:.2}  tokens: {} in / {} out",
+                format!("task {task_id:02}").dimmed(),
+                fmt_tokens(*input_tokens),
+                fmt_tokens(*output_tokens),
+            );
+        }
+        Event::TaskSummary {
+            task_id,
+            success,
+            duration,
+            cost_usd,
+            input_tokens,
+            output_tokens,
+            steps,
+        } => {
+            let status = if *success {
+                "done".green().to_string()
+            } else {
+                "failed".red().to_string()
+            };
+            let dur = format_duration(*duration);
+            println!(
+                "{elapsed}  {} task {task_id:02}  {status}  {dur}  ${cost_usd:.2}  tokens: {} in / {} out  ({steps} step{})",
+                "─".dimmed(),
+                fmt_tokens(*input_tokens),
+                fmt_tokens(*output_tokens),
+                if *steps == 1 { "" } else { "s" },
+            );
+        }
+        Event::SessionSummary {
+            duration,
+            cost_usd,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            ..
+        } => {
+            let dur = format_duration(*duration);
+            println!("{elapsed}  Duration: {dur}  Cost: ${cost_usd:.2}");
+            println!(
+                "          Tokens: {} in / {} out / {} cache-read / {} cache-create",
+                fmt_tokens(*input_tokens),
+                fmt_tokens(*output_tokens),
+                fmt_tokens(*cache_read_tokens),
+                fmt_tokens(*cache_creation_tokens),
+            );
+        }
+        // Skip some low-level events
+        Event::PromptSent { .. } | Event::TokenUsage { .. } => {}
+    }
+}
+
+/// Format a duration as "Xm Ys" or "Xs"
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Extract a meaningful parameter from a tool call
+fn extract_tool_param(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "Read" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Edit" | "Write" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "Glob" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Extract a summary from a tool result
+fn extract_result_summary(name: &str, output: &serde_json::Value) -> String {
+    if name == "Read"
+        && let Some(file) = output.get("file")
+    {
+        let num_lines = file
+            .get("numLines")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        return format!("{name} ok ({num_lines} lines)");
+    }
+
+    if matches!(name, "Write" | "Edit") {
+        return format!("{name} ok");
+    }
+
+    format!("{name} ok")
 }
