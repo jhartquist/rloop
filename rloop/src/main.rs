@@ -127,6 +127,7 @@ async fn cmd_run(id: Option<u32>, all: bool, auto_merge: bool) -> anyhow::Result
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nCancelled. Cleaning up...");
                 cleanup_worktrees(&repo);
+                cleanup_lock(&repo);
             }
         }
         return Ok(());
@@ -145,6 +146,7 @@ async fn cmd_run(id: Option<u32>, all: bool, auto_merge: bool) -> anyhow::Result
         _ = tokio::signal::ctrl_c() => {
             eprintln!("\nCancelled. Cleaning up...");
             cleanup_worktrees(&repo);
+            cleanup_lock(&repo);
         }
     }
 
@@ -163,6 +165,16 @@ fn print_session_result(result: &rloop::session::SessionResult) {
     }
     if result.auto_merged {
         eprintln!("  Auto-merged to parent branch");
+    }
+}
+
+/// Best-effort cleanup of the session lock file.
+fn cleanup_lock(repo: &std::path::Path) {
+    let lock_path = repo.join(".rloop").join(".lock");
+    if lock_path.exists()
+        && let Err(e) = std::fs::remove_file(&lock_path)
+    {
+        eprintln!("warning: failed to remove lock file: {e}");
     }
 }
 

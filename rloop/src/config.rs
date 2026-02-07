@@ -120,7 +120,7 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
 
     let gitignore_path = rloop_dir.join(".gitignore");
     if !gitignore_path.exists() {
-        fs::write(&gitignore_path, "worktrees/\nsessions/\n")?;
+        fs::write(&gitignore_path, "worktrees/\nsessions/\n.lock\n")?;
     }
 
     // Commit scaffolding (idempotent — only commits if there are staged changes).

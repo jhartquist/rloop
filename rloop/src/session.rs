@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::git::{
     self, Worktree, cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree,
 };
+use crate::lock::SessionLock;
 use crate::log::{Event, SessionLogger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome};
 use crate::task::{Task, TaskId, load_all_tasks, resolve_all_dag, resolve_dag};
@@ -252,8 +253,11 @@ pub async fn run_session_with<E: StepExecutor>(
     git::assert_has_commits(repo)?;
     git::assert_clean_worktree(repo)?;
 
+    let rloop_dir = repo.join(".rloop");
+    let _lock = SessionLock::acquire(&rloop_dir).context("failed to acquire session lock")?;
+
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
-    let session_dir = repo.join(".rloop").join("sessions");
+    let session_dir = rloop_dir.join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
 
     emit(
@@ -267,7 +271,7 @@ pub async fn run_session_with<E: StepExecutor>(
     let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve DAG
-    let tasks_dir = repo.join(".rloop").join("tasks");
+    let tasks_dir = rloop_dir.join("tasks");
     let tasks = load_all_tasks(&tasks_dir)?;
     let plan = resolve_dag(&tasks, target_task)?;
 
@@ -329,6 +333,7 @@ pub async fn run_session_with<E: StepExecutor>(
         &mut logger,
     )?;
 
+    // Lock released on drop
     Ok(SessionResult {
         session_id,
         branch: session_branch,
@@ -366,8 +371,11 @@ pub async fn run_all_session_with<E: StepExecutor>(
     git::assert_has_commits(repo)?;
     git::assert_clean_worktree(repo)?;
 
+    let rloop_dir = repo.join(".rloop");
+    let _lock = SessionLock::acquire(&rloop_dir).context("failed to acquire session lock")?;
+
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
-    let session_dir = repo.join(".rloop").join("sessions");
+    let session_dir = rloop_dir.join("sessions");
     let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
 
     // Use TaskId(u32::MAX) as sentinel for "all tasks"
@@ -383,7 +391,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
     let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve full DAG
-    let tasks_dir = repo.join(".rloop").join("tasks");
+    let tasks_dir = rloop_dir.join("tasks");
     let tasks = load_all_tasks(&tasks_dir)?;
     let plan = resolve_all_dag(&tasks)?;
 

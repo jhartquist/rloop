@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod git;
+pub mod lock;
 pub mod log;
 pub mod model;
 pub mod session;

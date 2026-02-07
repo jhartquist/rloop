@@ -703,6 +703,7 @@ dependencies = [
  "claude-agent-sdk-rs",
  "colored",
  "futures",
+ "libc",
  "schemars",
  "serde",
  "serde_json",

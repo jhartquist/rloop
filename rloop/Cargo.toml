@@ -19,3 +19,4 @@ strum = { version = "0.27.2", features = ["derive"] }
 schemars = "1.2.1"
 serde_yaml = "0.9"
 wait-timeout = "0.2"
+libc = "0.2"
