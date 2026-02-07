@@ -110,6 +110,10 @@ mod tests {
             model: Model::Haiku,
             cost_usd: 0.01,
             duration: Duration::from_secs(5),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 200,
+            cache_creation_tokens: 100,
             cc_session_id: Some(format!("session-{id}")),
             events: vec![],
         }

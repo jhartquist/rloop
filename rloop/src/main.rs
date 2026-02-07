@@ -154,7 +154,7 @@ async fn cmd_run(id: Option<u32>, all: bool, auto_merge: bool) -> anyhow::Result
 }
 
 fn print_session_result(result: &rloop::session::SessionResult) {
-    eprintln!("Session {} complete", result.session_id);
+    eprintln!("\nSession {} complete", result.session_id);
     eprintln!("  Branch: {}", result.branch);
     eprintln!("  Completed: {:?}", result.completed_tasks);
     if !result.failed_tasks.is_empty() {
@@ -165,6 +165,32 @@ fn print_session_result(result: &rloop::session::SessionResult) {
     }
     if result.auto_merged {
         eprintln!("  Auto-merged to parent branch");
+    }
+
+    let m = &result.metrics;
+    let secs = m.duration.as_secs();
+    let dur = if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    };
+    eprintln!("  Duration: {dur}  Cost: ${:.2}", m.cost_usd);
+    eprintln!(
+        "  Tokens: {} in / {} out / {} cache-read / {} cache-create",
+        fmt_tokens(m.input_tokens),
+        fmt_tokens(m.output_tokens),
+        fmt_tokens(m.cache_read_tokens),
+        fmt_tokens(m.cache_creation_tokens),
+    );
+}
+
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1000 {
+        #[allow(clippy::cast_precision_loss)]
+        let k = n as f64 / 1000.0;
+        format!("{k:.0}k")
+    } else {
+        n.to_string()
     }
 }
 

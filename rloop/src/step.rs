@@ -37,6 +37,10 @@ pub struct StepResult {
     pub cost_usd: f64,
     #[serde(with = "duration_serde")]
     pub duration: Duration,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     /// Claude Code session ID — for tracing back to CC logs or future session resume.
     pub cc_session_id: Option<String>,
     /// Claude stream events collected during the step.
@@ -45,7 +49,8 @@ pub struct StepResult {
 }
 
 /// Serialize `Duration` as seconds (f64) for JSON compatibility.
-mod duration_serde {
+#[allow(clippy::missing_errors_doc)]
+pub mod duration_serde {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serializer};
@@ -306,11 +311,39 @@ fn extract_result_usage(usage: &serde_json::Value) -> Vec<Event> {
     events
 }
 
+/// Accumulated token counts from processing the Claude response stream.
+#[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_field_names)]
+struct TokenAccumulator {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+}
+
+impl TokenAccumulator {
+    fn add_from_event(&mut self, event: &Event) {
+        if let Event::TokenUsage {
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+        } = event
+        {
+            self.input_tokens += input_tokens;
+            self.output_tokens += output_tokens;
+            self.cache_read_tokens += cache_read_input_tokens;
+            self.cache_creation_tokens += cache_creation_input_tokens;
+        }
+    }
+}
+
 /// Collected data from processing the Claude response stream.
 struct StreamData {
     cc_session_id: Option<String>,
     result_message: Option<Message>,
     events: Vec<Event>,
+    tokens: TokenAccumulator,
 }
 
 /// Process the Claude response stream: collect events, print to terminal, handle interrupts.
@@ -322,6 +355,7 @@ async fn process_stream(
     let mut cc_session_id: Option<String> = None;
     let mut result_message: Option<Message> = None;
     let mut events: Vec<Event> = Vec::new();
+    let mut tokens = TokenAccumulator::default();
     let mut interrupted = false;
     let mut printer = StreamPrinter::new(worktree_path);
 
@@ -359,6 +393,7 @@ async fn process_stream(
                 // Extract per-message token usage
                 if let Some(usage) = &m.message.usage {
                     let event = extract_token_usage(usage);
+                    tokens.add_from_event(&event);
                     printer.print(&event);
                     events.push(event);
                 }
@@ -394,6 +429,7 @@ async fn process_stream(
             Message::Result(res) => {
                 if let Some(usage) = &res.usage {
                     for event in extract_result_usage(usage) {
+                        tokens.add_from_event(&event);
                         printer.print(&event);
                         events.push(event);
                     }
@@ -416,6 +452,7 @@ async fn process_stream(
         cc_session_id,
         result_message,
         events,
+        tokens,
     })
 }
 
@@ -505,6 +542,10 @@ pub async fn execute_step(
         model: task.model,
         cost_usd,
         duration: start.elapsed(),
+        input_tokens: data.tokens.input_tokens,
+        output_tokens: data.tokens.output_tokens,
+        cache_read_tokens: data.tokens.cache_read_tokens,
+        cache_creation_tokens: data.tokens.cache_creation_tokens,
         cc_session_id: data.cc_session_id,
         events: data.events,
     })
@@ -538,12 +579,20 @@ mod tests {
             model: Model::Sonnet,
             cost_usd: 0.05,
             duration: Duration::from_secs(30),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 200,
+            cache_creation_tokens: 100,
             cc_session_id: None,
             events: vec![],
         };
         assert_eq!(result.task_id, TaskId(5));
         assert!(matches!(result.model, Model::Sonnet));
         assert!(result.cc_session_id.is_none());
+        assert_eq!(result.input_tokens, 1000);
+        assert_eq!(result.output_tokens, 500);
+        assert_eq!(result.cache_read_tokens, 200);
+        assert_eq!(result.cache_creation_tokens, 100);
 
         let result_with_session = StepResult {
             task_id: TaskId(3),
@@ -554,6 +603,10 @@ mod tests {
             model: Model::Opus,
             cost_usd: 0.10,
             duration: Duration::from_secs(60),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             cc_session_id: Some("session-abc".into()),
             events: vec![],
         };

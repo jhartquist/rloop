@@ -82,6 +82,62 @@ pub enum Event {
         percentage: f32,
         recommendation: String,
     },
+
+    // Metrics summaries
+    /// One-line summary after a step completes.
+    StepSummary {
+        task_id: TaskId,
+        step_number: u32,
+        max_steps: u32,
+        #[serde(with = "crate::step::duration_serde")]
+        duration: std::time::Duration,
+        cost_usd: f64,
+        input_tokens: u64,
+        output_tokens: u64,
+    },
+    /// One-line summary after a task completes (aggregating all steps).
+    TaskSummary {
+        task_id: TaskId,
+        success: bool,
+        #[serde(with = "crate::step::duration_serde")]
+        duration: std::time::Duration,
+        cost_usd: f64,
+        input_tokens: u64,
+        output_tokens: u64,
+        steps: u32,
+    },
+    /// Session-level totals printed at end.
+    SessionSummary {
+        session_id: SessionId,
+        #[serde(with = "crate::step::duration_serde")]
+        duration: std::time::Duration,
+        cost_usd: f64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_creation_tokens: u64,
+    },
+}
+
+/// Format a duration as `Xm Ys` or `Xs` for short durations.
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Format a token count with `k` suffix for thousands.
+fn format_tokens(n: u64) -> String {
+    if n >= 1000 {
+        #[allow(clippy::cast_precision_loss)]
+        let k = n as f64 / 1000.0;
+        format!("{k:.0}k")
+    } else {
+        n.to_string()
+    }
 }
 
 /// Logs session events to JSONL files and prints to terminal.
@@ -120,7 +176,7 @@ impl SessionLogger {
     }
 
     /// Pretty-print an event to the terminal.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::too_many_lines)]
     pub fn print(&self, event: &Event) {
         match event {
             Event::SessionStarted { session_id, target } => {
@@ -198,6 +254,68 @@ impl SessionLogger {
             }
             Event::ContextUsage { percentage, .. } => {
                 eprintln!("  context: {percentage:.1}%");
+            }
+            Event::StepSummary {
+                task_id,
+                step_number,
+                max_steps,
+                duration,
+                cost_usd,
+                input_tokens,
+                output_tokens,
+            } => {
+                eprintln!(
+                    "  {} step {step_number}/{max_steps}  {}  ${cost_usd:.2}  tokens: {} in / {} out",
+                    format!("task {task_id}").dimmed(),
+                    format_duration(*duration),
+                    format_tokens(*input_tokens),
+                    format_tokens(*output_tokens),
+                );
+            }
+            Event::TaskSummary {
+                task_id,
+                success,
+                duration,
+                cost_usd,
+                input_tokens,
+                output_tokens,
+                steps,
+            } => {
+                let status = if *success {
+                    "done".green().to_string()
+                } else {
+                    "failed".red().to_string()
+                };
+                eprintln!(
+                    "{} task {task_id:02}  {status}  {}  ${cost_usd:.2}  tokens: {} in / {} out  ({steps} step{})",
+                    "─".dimmed(),
+                    format_duration(*duration),
+                    format_tokens(*input_tokens),
+                    format_tokens(*output_tokens),
+                    if *steps == 1 { "" } else { "s" },
+                );
+            }
+            Event::SessionSummary {
+                session_id,
+                duration,
+                cost_usd,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => {
+                eprintln!(
+                    "  Duration: {}  Cost: ${cost_usd:.2}",
+                    format_duration(*duration),
+                );
+                eprintln!(
+                    "  Tokens: {} in / {} out / {} cache-read / {} cache-create",
+                    format_tokens(*input_tokens),
+                    format_tokens(*output_tokens),
+                    format_tokens(*cache_read_tokens),
+                    format_tokens(*cache_creation_tokens),
+                );
+                let _ = session_id; // used in serialization only
             }
         }
     }
@@ -371,6 +489,7 @@ impl StreamPrinter {
                 let label = "   CTX".dimmed();
                 eprintln!("{label}  {percentage:.1}% — {recommendation}");
             }
+            // Metric summaries are printed by SessionLogger, not StreamPrinter
             _ => {}
         }
     }
@@ -524,7 +643,15 @@ mod tests {
 
     #[test]
     fn serialize_all_variants() {
-        let events = vec![
+        let events = all_event_variants();
+        for event in &events {
+            let json = serde_json::to_string(event);
+            assert!(json.is_ok(), "Failed to serialize: {json:?}");
+        }
+    }
+
+    fn all_event_variants() -> Vec<Event> {
+        vec![
             Event::SessionStarted {
                 session_id: SessionId("s1".into()),
                 target: TaskId(0),
@@ -583,11 +710,34 @@ mod tests {
                 percentage: 42.5,
                 recommendation: "plenty of room".into(),
             },
-        ];
-        for event in &events {
-            let json = serde_json::to_string(event);
-            assert!(json.is_ok(), "Failed to serialize: {json:?}");
-        }
+            Event::StepSummary {
+                task_id: TaskId(1),
+                step_number: 1,
+                max_steps: 3,
+                duration: std::time::Duration::from_secs(222),
+                cost_usd: 0.12,
+                input_tokens: 45000,
+                output_tokens: 12000,
+            },
+            Event::TaskSummary {
+                task_id: TaskId(3),
+                success: true,
+                duration: std::time::Duration::from_secs(318),
+                cost_usd: 0.25,
+                input_tokens: 82000,
+                output_tokens: 28000,
+                steps: 2,
+            },
+            Event::SessionSummary {
+                session_id: SessionId("20250206-143022".into()),
+                duration: std::time::Duration::from_secs(765),
+                cost_usd: 0.72,
+                input_tokens: 245_000,
+                output_tokens: 89000,
+                cache_read_tokens: 12000,
+                cache_creation_tokens: 5000,
+            },
+        ]
     }
 
     #[test]
@@ -698,66 +848,7 @@ mod tests {
 
     #[test]
     fn roundtrip_all_event_variants() {
-        let events = vec![
-            Event::SessionStarted {
-                session_id: SessionId("s1".into()),
-                target: TaskId(0),
-            },
-            Event::TaskStarted { task_id: TaskId(1) },
-            Event::WorktreeCreated {
-                task_id: TaskId(2),
-                path: PathBuf::from("/tmp/wt"),
-            },
-            Event::PromptSent { task_id: TaskId(3) },
-            Event::VerificationRan {
-                task_id: TaskId(4),
-                command: "cargo test".into(),
-                passed: true,
-                output: "ok".into(),
-            },
-            Event::TaskCompleted {
-                task_id: TaskId(5),
-                summary: "done".into(),
-            },
-            Event::TaskFailed {
-                task_id: TaskId(6),
-                reason: "fail".into(),
-            },
-            Event::WorktreeMerged {
-                task_id: TaskId(7),
-                into_branch: "main".into(),
-            },
-            Event::WorktreeCleanedUp { task_id: TaskId(8) },
-            Event::SessionComplete {
-                branch: "rloop/05".into(),
-            },
-            Event::SessionAutoMerged {
-                branch: "rloop/05".into(),
-                into_branch: "main".into(),
-            },
-            Event::SessionCancelled,
-            Event::AssistantMessage {
-                content: "hello".into(),
-            },
-            Event::ToolCall {
-                name: "read".into(),
-                input: json!({"path": "/foo"}),
-            },
-            Event::ToolResult {
-                name: "read".into(),
-                output: json!("contents"),
-            },
-            Event::TokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_input_tokens: 1000,
-                cache_creation_input_tokens: 500,
-            },
-            Event::ContextUsage {
-                percentage: 42.5,
-                recommendation: "plenty of room".into(),
-            },
-        ];
+        let events = all_event_variants();
         for event in &events {
             let json = serde_json::to_string(event).unwrap();
             let roundtripped: Event = serde_json::from_str(&json).unwrap();
