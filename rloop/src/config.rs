@@ -13,6 +13,8 @@ pub struct Config {
     /// Timeout in seconds for each verification command. `0` means no timeout.
     pub timeout_seconds: u64,
     pub task: TaskConfig,
+    /// Maximum number of tasks to execute in parallel. `1` means sequential.
+    pub max_parallel: usize,
 }
 
 /// Configuration for `rloop task` subcommands.
@@ -29,6 +31,7 @@ impl Default for Config {
             max_retries: 10,
             timeout_seconds: 300,
             task: TaskConfig::default(),
+            max_parallel: 1,
         }
     }
 }
@@ -57,6 +60,9 @@ impl Config {
             task: TaskSectionOut {
                 enhance_model: self.task.enhance_model,
             },
+            session: SessionSectionOut {
+                max_parallel: self.max_parallel,
+            },
         };
         Ok(toml::to_string_pretty(&file)?)
     }
@@ -69,6 +75,8 @@ struct ConfigFile {
     step: Option<StepSection>,
     #[serde(default)]
     task: Option<TaskSection>,
+    #[serde(default)]
+    session: Option<SessionSection>,
 }
 
 #[derive(Deserialize)]
@@ -84,11 +92,17 @@ struct TaskSection {
     enhance_model: Option<Model>,
 }
 
+#[derive(Deserialize)]
+struct SessionSection {
+    max_parallel: Option<usize>,
+}
+
 /// Intermediate representation for TOML output.
 #[derive(Serialize)]
 struct ConfigFileOut {
     step: StepSectionOut,
     task: TaskSectionOut,
+    session: SessionSectionOut,
 }
 
 #[derive(Serialize)]
@@ -102,6 +116,11 @@ struct StepSectionOut {
 #[derive(Serialize)]
 struct TaskSectionOut {
     enhance_model: Model,
+}
+
+#[derive(Serialize)]
+struct SessionSectionOut {
+    max_parallel: usize,
 }
 
 /// Load configuration from `.rloop/config.toml`, merging with defaults.
@@ -127,9 +146,15 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         None => defaults.task,
     };
 
+    let max_parallel = file
+        .session
+        .and_then(|s| s.max_parallel)
+        .unwrap_or(defaults.max_parallel);
+
     let Some(step) = file.step else {
         return Ok(Config {
             task: task_config,
+            max_parallel,
             ..defaults
         });
     };
@@ -140,6 +165,7 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         max_retries: step.max_retries.unwrap_or(defaults.max_retries),
         timeout_seconds: step.timeout_seconds.unwrap_or(defaults.timeout_seconds),
         task: task_config,
+        max_parallel,
     })
 }
 
@@ -195,6 +221,7 @@ mod tests {
         assert_eq!(config.max_retries, 10);
         assert_eq!(config.timeout_seconds, 300);
         assert!(matches!(config.task.enhance_model, Model::Sonnet));
+        assert_eq!(config.max_parallel, 1);
     }
 
     #[test]
@@ -273,6 +300,7 @@ mod tests {
         assert_eq!(loaded.max_retries, 10);
         assert_eq!(loaded.timeout_seconds, 300);
         assert!(matches!(loaded.task.enhance_model, Model::Sonnet));
+        assert_eq!(loaded.max_parallel, 1);
     }
 
     #[test]
@@ -317,6 +345,66 @@ mod tests {
         let content = std::fs::read_to_string(rloop_dir.join(".gitignore")).unwrap();
         assert!(content.contains("worktrees/"));
         assert!(content.contains("sessions/"));
+    }
+
+    #[test]
+    fn load_session_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[session]\nmax_parallel = 4\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.max_parallel, 4);
+        // step defaults still apply
+        assert!(matches!(config.model, Model::Opus));
+    }
+
+    #[test]
+    fn load_session_section_defaults_max_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[session]\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.max_parallel, 1);
+    }
+
+    #[test]
+    fn load_all_three_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[step]\nmodel = \"Haiku\"\n\n[task]\nenhance_model = \"Opus\"\n\n[session]\nmax_parallel = 3\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(matches!(config.model, Model::Haiku));
+        assert!(matches!(config.task.enhance_model, Model::Opus));
+        assert_eq!(config.max_parallel, 3);
+    }
+
+    #[test]
+    fn to_toml_contains_session_section() {
+        let config = Config {
+            max_parallel: 2,
+            ..Config::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        assert!(toml_str.contains("[session]"));
+        assert!(toml_str.contains("max_parallel = 2"));
+    }
+
+    #[test]
+    fn to_toml_roundtrip_max_parallel() {
+        let config = Config {
+            max_parallel: 5,
+            ..Config::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), &toml_str).unwrap();
+        let loaded = load_config(dir.path()).unwrap();
+        assert_eq!(loaded.max_parallel, 5);
     }
 
     #[test]

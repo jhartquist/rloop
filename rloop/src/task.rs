@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -289,6 +289,39 @@ fn dfs(
     order.push(node);
 
     Ok(())
+}
+
+/// Find tasks in the execution plan that are ready to run.
+///
+/// A task is ready when:
+/// - It appears in `steps` (the execution plan)
+/// - It is not in `completed`, `failed`, or `in_flight`
+/// - All of its dependencies are in `completed`
+///
+/// Returns task IDs in the same relative order as `steps`.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn find_ready_tasks(
+    tasks: &[Task],
+    steps: &[TaskId],
+    completed: &HashSet<TaskId>,
+    failed: &HashSet<TaskId>,
+    in_flight: &HashSet<TaskId>,
+) -> Vec<TaskId> {
+    let task_map: HashMap<TaskId, &Task> = tasks.iter().map(|t| (t.id, t)).collect();
+
+    steps
+        .iter()
+        .filter(|id| !completed.contains(id))
+        .filter(|id| !failed.contains(id))
+        .filter(|id| !in_flight.contains(id))
+        .filter(|id| {
+            task_map
+                .get(id)
+                .is_some_and(|task| task.depends_on.iter().all(|dep| completed.contains(dep)))
+        })
+        .copied()
+        .collect()
 }
 
 #[cfg(test)]
@@ -817,5 +850,229 @@ Do the thing.
 
         // No `completed` field at all — should error
         assert!(mark_completed(&path).is_err());
+    }
+
+    // --- find_ready_tasks tests ---
+
+    fn ready(
+        tasks: &[Task],
+        steps: &[u32],
+        completed: &[u32],
+        failed: &[u32],
+        in_flight: &[u32],
+    ) -> Vec<TaskId> {
+        let steps: Vec<TaskId> = steps.iter().map(|&id| TaskId(id)).collect();
+        let completed: HashSet<TaskId> = completed.iter().map(|&id| TaskId(id)).collect();
+        let failed: HashSet<TaskId> = failed.iter().map(|&id| TaskId(id)).collect();
+        let in_flight: HashSet<TaskId> = in_flight.iter().map(|&id| TaskId(id)).collect();
+        find_ready_tasks(tasks, &steps, &completed, &failed, &in_flight)
+    }
+
+    #[test]
+    fn ready_single_no_deps() {
+        let tasks = vec![make_task(0, &[])];
+        let result = ready(&tasks, &[0], &[], &[], &[]);
+        assert_eq!(result, vec![TaskId(0)]);
+    }
+
+    #[test]
+    fn ready_single_already_completed() {
+        let tasks = vec![make_task(0, &[])];
+        let result = ready(&tasks, &[0], &[0], &[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_single_already_failed() {
+        let tasks = vec![make_task(0, &[])];
+        let result = ready(&tasks, &[0], &[], &[0], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_single_in_flight() {
+        let tasks = vec![make_task(0, &[])];
+        let result = ready(&tasks, &[0], &[], &[], &[0]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_linear_chain_nothing_done() {
+        // 0 -> 1 -> 2
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2], &[], &[], &[]);
+        // Only task 0 is ready (no deps)
+        assert_eq!(result, vec![TaskId(0)]);
+    }
+
+    #[test]
+    fn ready_linear_chain_first_done() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2], &[0], &[], &[]);
+        assert_eq!(result, vec![TaskId(1)]);
+    }
+
+    #[test]
+    fn ready_linear_chain_first_two_done() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2], &[0, 1], &[], &[]);
+        assert_eq!(result, vec![TaskId(2)]);
+    }
+
+    #[test]
+    fn ready_diamond_root_done() {
+        // 0 -> 1, 0 -> 2, 1+2 -> 3
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[0]),
+            make_task(3, &[1, 2]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2, 3], &[0], &[], &[]);
+        assert_eq!(result, vec![TaskId(1), TaskId(2)]);
+    }
+
+    #[test]
+    fn ready_diamond_one_branch_done() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[0]),
+            make_task(3, &[1, 2]),
+        ];
+        // Task 0 and 1 completed, 2 still in flight
+        let result = ready(&tasks, &[0, 1, 2, 3], &[0, 1], &[], &[2]);
+        // Task 3 can't run (dep 2 not completed)
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_diamond_both_branches_done() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[0]),
+            make_task(3, &[1, 2]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2, 3], &[0, 1, 2], &[], &[]);
+        assert_eq!(result, vec![TaskId(3)]);
+    }
+
+    #[test]
+    fn ready_wide_independent() {
+        // 5 independent tasks, none started
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[]),
+            make_task(2, &[]),
+            make_task(3, &[]),
+            make_task(4, &[]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2, 3, 4], &[], &[], &[]);
+        assert_eq!(
+            result,
+            vec![TaskId(0), TaskId(1), TaskId(2), TaskId(3), TaskId(4)]
+        );
+    }
+
+    #[test]
+    fn ready_wide_some_in_flight() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[]),
+            make_task(2, &[]),
+            make_task(3, &[]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2, 3], &[], &[], &[0, 2]);
+        assert_eq!(result, vec![TaskId(1), TaskId(3)]);
+    }
+
+    #[test]
+    fn ready_all_completed() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[1]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2], &[0, 1, 2], &[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_all_failed() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[]),
+            make_task(2, &[]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2], &[], &[0, 1, 2], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_failed_dep_blocks_dependent() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[]),
+        ];
+        // Task 0 failed, so task 1 should not be ready (dep 0 not in completed)
+        // Task 2 is independent and ready
+        let result = ready(&tasks, &[0, 1, 2], &[], &[0], &[]);
+        assert_eq!(result, vec![TaskId(2)]);
+    }
+
+    #[test]
+    fn ready_mixed_completed_failed_inflight() {
+        // 0(done) -> 1(in_flight), 2(failed), 3(ready), 4(blocked by 2)
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[0]),
+            make_task(2, &[]),
+            make_task(3, &[]),
+            make_task(4, &[2]),
+        ];
+        let result = ready(&tasks, &[0, 1, 2, 3, 4], &[0], &[2], &[1]);
+        // Task 3 is the only ready one
+        assert_eq!(result, vec![TaskId(3)]);
+    }
+
+    #[test]
+    fn ready_preserves_step_order() {
+        let tasks = vec![
+            make_task(0, &[]),
+            make_task(1, &[]),
+            make_task(2, &[]),
+        ];
+        // Steps in reverse order
+        let result = ready(&tasks, &[2, 1, 0], &[], &[], &[]);
+        assert_eq!(result, vec![TaskId(2), TaskId(1), TaskId(0)]);
+    }
+
+    #[test]
+    fn ready_empty_steps() {
+        let tasks = vec![make_task(0, &[])];
+        let result = ready(&tasks, &[], &[], &[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ready_empty_tasks() {
+        let tasks: Vec<Task> = vec![];
+        let result = ready(&tasks, &[0], &[], &[], &[]);
+        // Task 0 not in task_map, so not ready
+        assert!(result.is_empty());
     }
 }

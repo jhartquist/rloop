@@ -374,6 +374,42 @@ impl SessionLogger {
     }
 }
 
+/// Wraps an unbounded channel sender for sending events to the logger task.
+///
+/// Cloneable — each concurrent task gets its own `EventSender`.
+/// `send()` is best-effort: errors are silently ignored (expected during shutdown
+/// when the receiver has been dropped).
+#[derive(Clone)]
+pub struct EventSender(tokio::sync::mpsc::UnboundedSender<Event>);
+
+impl EventSender {
+    /// Send an event to the logger task. Silently ignores send errors (shutdown).
+    pub fn send(&self, event: Event) {
+        let _ = self.0.send(event);
+    }
+}
+
+/// Spawn a background logger task that owns the `SessionLogger` and processes
+/// events from the channel.
+///
+/// Returns an `EventSender` for publishing events and a `JoinHandle` to await
+/// when all senders have been dropped. The logger task runs until the channel
+/// closes (all `EventSender` clones dropped), then exits.
+#[must_use]
+pub fn spawn_logger(logger: SessionLogger) -> (EventSender, tokio::task::JoinHandle<()>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    let handle = tokio::spawn(async move {
+        let mut logger = logger;
+        while let Some(event) = rx.recv().await {
+            logger.print(&event);
+            if let Err(e) = logger.log(&event) {
+                eprintln!("warning: failed to write session log: {e}");
+            }
+        }
+    });
+    (EventSender(tx), handle)
+}
+
 /// Load events from a JSONL session log file.
 ///
 /// Each line is parsed as a JSON-encoded `Event`. Lines that fail to parse
@@ -1423,7 +1459,99 @@ mod tests {
         ];
         for d in cases {
             let result = format_elapsed(d);
-            assert_eq!(result.len(), 8, "elapsed time must be 8 chars: {:?}", result);
+            assert_eq!(result.len(), 8, "elapsed time must be 8 chars: {result:?}");
         }
+    }
+
+    // --- EventSender / spawn_logger tests ---
+
+    #[tokio::test]
+    async fn event_sender_delivers_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("sender-test".into());
+        let logger = SessionLogger::new(dir.path(), session_id).unwrap();
+        let (sender, handle) = spawn_logger(logger);
+
+        sender.send(Event::TaskStarted { task_id: TaskId(0) });
+        sender.send(Event::TaskCompleted {
+            task_id: TaskId(0),
+            summary: "done".into(),
+        });
+
+        // Drop sender to close channel, then await logger
+        drop(sender);
+        handle.await.unwrap();
+
+        let path = dir.path().join("sender-test.jsonl");
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::TaskStarted { task_id } if *task_id == TaskId(0)));
+        assert!(matches!(&events[1], Event::TaskCompleted { task_id, .. } if *task_id == TaskId(0)));
+    }
+
+    #[tokio::test]
+    async fn event_sender_clone_delivers_from_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("clone-test".into());
+        let logger = SessionLogger::new(dir.path(), session_id).unwrap();
+        let (sender1, handle) = spawn_logger(logger);
+        let sender2 = sender1.clone();
+
+        sender1.send(Event::TaskStarted { task_id: TaskId(1) });
+        sender2.send(Event::TaskStarted { task_id: TaskId(2) });
+
+        drop(sender1);
+        drop(sender2);
+        handle.await.unwrap();
+
+        let path = dir.path().join("clone-test.jsonl");
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn event_sender_many_events_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("order-test".into());
+        let logger = SessionLogger::new(dir.path(), session_id).unwrap();
+        let (sender, handle) = spawn_logger(logger);
+
+        for i in 0..50 {
+            sender.send(Event::TaskStarted { task_id: TaskId(i) });
+        }
+
+        drop(sender);
+        handle.await.unwrap();
+
+        let path = dir.path().join("order-test.jsonl");
+        let events = load_events(&path).unwrap();
+        assert_eq!(events.len(), 50);
+
+        // Verify order preserved
+        for (idx, event) in events.iter().enumerate() {
+            match event {
+                Event::TaskStarted { task_id } => {
+                    assert_eq!(task_id.0, u32::try_from(idx).unwrap());
+                }
+                other => panic!("expected TaskStarted, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn event_sender_send_after_drop_receiver_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("drop-test".into());
+        let logger = SessionLogger::new(dir.path(), session_id).unwrap();
+        let (sender, handle) = spawn_logger(logger);
+
+        // Drop the handle by aborting and creating a new sender use after
+        handle.abort();
+        // Wait a bit for the task to be cancelled
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Sending after receiver is dropped should not panic
+        sender.send(Event::SessionCancelled);
+        sender.send(Event::SessionCancelled);
     }
 }

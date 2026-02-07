@@ -11,7 +11,7 @@ use crate::git::{
     self, Worktree, cleanup_worktree, create_worktree, fast_forward_ref, lock_worktree,
 };
 use crate::lock::SessionLock;
-use crate::log::{Event, SessionLogger};
+use crate::log::{Event, EventSender, SessionLogger, spawn_logger};
 use crate::step::{RealStepExecutor, StepExecutor, StepOutcome, StepResult};
 use crate::task::{Task, TaskId, load_all_tasks, mark_completed, resolve_all_dag, resolve_dag};
 
@@ -64,11 +64,8 @@ fn create_session_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
 // Logging helpers
 // ---------------------------------------------------------------------------
 
-fn emit(logger: &mut SessionLogger, event: &Event) {
-    logger.print(event);
-    if let Err(e) = logger.log(event) {
-        eprintln!("warning: failed to write session log: {e}");
-    }
+fn emit(logger: &EventSender, event: Event) {
+    logger.send(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +87,7 @@ async fn execute_dag<E: StepExecutor>(
     steps: &[TaskId],
     session_branch: &str,
     config: &Config,
-    logger: &mut SessionLogger,
+    logger: &EventSender,
     executor: &E,
 ) -> anyhow::Result<DagResult> {
     let task_by_id = |id: TaskId| -> Option<&Task> { tasks.iter().find(|t| t.id == id) };
@@ -115,7 +112,7 @@ async fn execute_dag<E: StepExecutor>(
             skipped_tasks.push(task_id);
             emit(
                 logger,
-                &Event::TaskFailed {
+                Event::TaskFailed {
                     task_id,
                     reason: "blocked by failed dependency".to_string(),
                 },
@@ -192,13 +189,13 @@ async fn execute_task<E: StepExecutor>(
     task: &Task,
     session_branch: &str,
     config: &Config,
-    logger: &mut SessionLogger,
+    logger: &EventSender,
     executor: &E,
 ) -> anyhow::Result<TaskOutcome> {
     let task_id = task.id;
     let task_start = Instant::now();
 
-    emit(logger, &Event::TaskStarted { task_id });
+    emit(logger, Event::TaskStarted { task_id });
 
     // Create worktree off session branch
     let worktree = create_worktree(repo, task_id, session_branch)
@@ -206,7 +203,7 @@ async fn execute_task<E: StepExecutor>(
 
     emit(
         logger,
-        &Event::WorktreeCreated {
+        Event::WorktreeCreated {
             task_id,
             path: worktree.path.clone(),
         },
@@ -226,7 +223,7 @@ async fn execute_task<E: StepExecutor>(
 
     emit(
         logger,
-        &Event::TaskSummary {
+        Event::TaskSummary {
             task_id,
             success,
             duration: task_metrics.duration,
@@ -254,7 +251,7 @@ async fn run_with_retries<E: StepExecutor>(
     task: &Task,
     worktree: &Worktree,
     config: &Config,
-    logger: &mut SessionLogger,
+    logger: &EventSender,
     executor: &E,
 ) -> anyhow::Result<(Option<String>, TaskMetrics)> {
     let task_id = task.id;
@@ -264,7 +261,7 @@ async fn run_with_retries<E: StepExecutor>(
 
     loop {
         attempts += 1;
-        emit(logger, &Event::PromptSent { task_id });
+        emit(logger, Event::PromptSent { task_id });
 
         let step_result = executor
             .execute(task, &worktree.path, config, &prior_learnings)
@@ -273,7 +270,7 @@ async fn run_with_retries<E: StepExecutor>(
         // Emit step start info (model_id and cc_session_id come from the SDK System message)
         emit(
             logger,
-            &Event::StepStarted {
+            Event::StepStarted {
                 task_id,
                 attempt: attempts,
                 model_id: step_result
@@ -284,19 +281,17 @@ async fn run_with_retries<E: StepExecutor>(
             },
         );
 
-        // Log all Claude stream events from this step
-        for event in &step_result.events {
-            if let Err(e) = logger.log(event) {
-                eprintln!("warning: failed to write stream event to session log: {e}");
-            }
-        }
-
         task_metrics.add_step(&step_result);
+
+        // Send all Claude stream events from this step to the logger
+        for event in step_result.events {
+            logger.send(event);
+        }
 
         // Emit step summary
         emit(
             logger,
-            &Event::StepSummary {
+            Event::StepSummary {
                 task_id,
                 step_number: attempts,
                 max_steps: config.max_retries,
@@ -311,7 +306,7 @@ async fn run_with_retries<E: StepExecutor>(
             StepOutcome::Success { summary } => {
                 emit(
                     logger,
-                    &Event::TaskCompleted {
+                    Event::TaskCompleted {
                         task_id,
                         summary: summary.clone(),
                     },
@@ -324,7 +319,7 @@ async fn run_with_retries<E: StepExecutor>(
                 if attempts >= config.max_retries {
                     emit(
                         logger,
-                        &Event::TaskFailed {
+                        Event::TaskFailed {
                             task_id,
                             reason: format!(
                                 "{reason} (after {attempts} attempt{})",
@@ -346,7 +341,7 @@ fn finish_successful_task(
     session_branch: &str,
     task_id: TaskId,
     summary: &str,
-    logger: &mut SessionLogger,
+    logger: &EventSender,
 ) -> anyhow::Result<()> {
     // Mark the task as completed in the worktree's copy of the task file
     let task_file = worktree.path.join(format!(".rloop/tasks/{task_id:02}.md"));
@@ -363,7 +358,7 @@ fn finish_successful_task(
 
     emit(
         logger,
-        &Event::WorktreeMerged {
+        Event::WorktreeMerged {
             task_id,
             into_branch: session_branch.to_string(),
         },
@@ -372,7 +367,7 @@ fn finish_successful_task(
     cleanup_worktree(repo, worktree)
         .with_context(|| format!("failed to cleanup worktree for task {task_id}"))?;
 
-    emit(logger, &Event::WorktreeCleanedUp { task_id });
+    emit(logger, Event::WorktreeCleanedUp { task_id });
     Ok(())
 }
 
@@ -381,12 +376,12 @@ fn finish_failed_task(
     repo: &Path,
     worktree: &Worktree,
     task_id: TaskId,
-    logger: &mut SessionLogger,
+    logger: &EventSender,
 ) -> anyhow::Result<()> {
     cleanup_worktree(repo, worktree)
         .with_context(|| format!("failed to cleanup worktree for failed task {task_id}"))?;
 
-    emit(logger, &Event::WorktreeCleanedUp { task_id });
+    emit(logger, Event::WorktreeCleanedUp { task_id });
     Ok(())
 }
 
@@ -428,7 +423,8 @@ pub async fn run_session_with<E: StepExecutor>(
 
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = rloop_dir.join("sessions");
-    let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
+    let session_logger = SessionLogger::new(&session_dir, session_id.clone())?;
+    let (logger, logger_handle) = spawn_logger(session_logger);
 
     let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
@@ -441,8 +437,8 @@ pub async fn run_session_with<E: StepExecutor>(
     let session_branch = format!("rloop-{target_task:02}");
 
     emit(
-        &mut logger,
-        &Event::SessionStarted {
+        &logger,
+        Event::SessionStarted {
             session_id: session_id.clone(),
             target: target_task,
         },
@@ -452,8 +448,8 @@ pub async fn run_session_with<E: StepExecutor>(
         .format("%Y-%m-%d %H:%M:%S %Z")
         .to_string();
     emit(
-        &mut logger,
-        &Event::SessionBanner {
+        &logger,
+        Event::SessionBanner {
             session_id: session_id.clone(),
             datetime,
             target: target_task,
@@ -471,7 +467,7 @@ pub async fn run_session_with<E: StepExecutor>(
         &plan.steps,
         &session_branch,
         config,
-        &mut logger,
+        &logger,
         executor,
     )
     .await?;
@@ -484,12 +480,12 @@ pub async fn run_session_with<E: StepExecutor>(
         auto_merge,
         &dag_result.failed_tasks,
         &dag_result.skipped_tasks,
-        &mut logger,
+        &logger,
     )?;
 
     emit(
-        &mut logger,
-        &Event::SessionSummary {
+        &logger,
+        Event::SessionSummary {
             session_id: session_id.clone(),
             duration: dag_result.metrics.duration,
             cost_usd: dag_result.metrics.cost_usd,
@@ -499,6 +495,10 @@ pub async fn run_session_with<E: StepExecutor>(
             cache_creation_tokens: dag_result.metrics.cache_creation_tokens,
         },
     );
+
+    // Drop sender to close channel, then await logger task
+    drop(logger);
+    let _ = logger_handle.await;
 
     // Lock released on drop
     Ok(SessionResult {
@@ -528,6 +528,7 @@ pub async fn run_all_session(
 ///
 /// # Errors
 /// Returns an error if session initialization, task loading, DAG resolution, or execution fails.
+#[allow(clippy::too_many_lines)]
 pub async fn run_all_session_with<E: StepExecutor>(
     repo: impl AsRef<Path>,
     config: &Config,
@@ -544,7 +545,8 @@ pub async fn run_all_session_with<E: StepExecutor>(
 
     let session_id = SessionId(chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string());
     let session_dir = rloop_dir.join("sessions");
-    let mut logger = SessionLogger::new(&session_dir, session_id.clone())?;
+    let session_logger = SessionLogger::new(&session_dir, session_id.clone())?;
+    let (logger, logger_handle) = spawn_logger(session_logger);
 
     // Use TaskId(u32::MAX) as sentinel for "all tasks"
     let all_target = TaskId(u32::MAX);
@@ -561,8 +563,8 @@ pub async fn run_all_session_with<E: StepExecutor>(
     let session_branch = format!("rloop-all-{timestamp}");
 
     emit(
-        &mut logger,
-        &Event::SessionStarted {
+        &logger,
+        Event::SessionStarted {
             session_id: session_id.clone(),
             target: all_target,
         },
@@ -572,8 +574,8 @@ pub async fn run_all_session_with<E: StepExecutor>(
         .format("%Y-%m-%d %H:%M:%S %Z")
         .to_string();
     emit(
-        &mut logger,
-        &Event::SessionBanner {
+        &logger,
+        Event::SessionBanner {
             session_id: session_id.clone(),
             datetime,
             target: all_target,
@@ -584,11 +586,14 @@ pub async fn run_all_session_with<E: StepExecutor>(
 
     if plan.steps.is_empty() {
         emit(
-            &mut logger,
-            &Event::SessionComplete {
+            &logger,
+            Event::SessionComplete {
                 branch: parent_branch.clone(),
             },
         );
+        // Drop sender to close channel, then await logger task
+        drop(logger);
+        let _ = logger_handle.await;
         return Ok(SessionResult {
             session_id,
             branch: parent_branch,
@@ -609,7 +614,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         &plan.steps,
         &session_branch,
         config,
-        &mut logger,
+        &logger,
         executor,
     )
     .await?;
@@ -621,12 +626,12 @@ pub async fn run_all_session_with<E: StepExecutor>(
         auto_merge,
         &dag_result.failed_tasks,
         &dag_result.skipped_tasks,
-        &mut logger,
+        &logger,
     )?;
 
     emit(
-        &mut logger,
-        &Event::SessionSummary {
+        &logger,
+        Event::SessionSummary {
             session_id: session_id.clone(),
             duration: dag_result.metrics.duration,
             cost_usd: dag_result.metrics.cost_usd,
@@ -636,6 +641,10 @@ pub async fn run_all_session_with<E: StepExecutor>(
             cache_creation_tokens: dag_result.metrics.cache_creation_tokens,
         },
     );
+
+    // Drop sender to close channel, then await logger task
+    drop(logger);
+    let _ = logger_handle.await;
 
     Ok(SessionResult {
         session_id,
@@ -656,7 +665,7 @@ fn finalize_session(
     auto_merge: bool,
     failed_tasks: &[TaskId],
     skipped_tasks: &[TaskId],
-    logger: &mut SessionLogger,
+    logger: &EventSender,
 ) -> anyhow::Result<bool> {
     if auto_merge && failed_tasks.is_empty() && skipped_tasks.is_empty() {
         // Fast-forward parent to session tip, then clean up session branch
@@ -670,7 +679,7 @@ fn finalize_session(
 
         emit(
             logger,
-            &Event::SessionAutoMerged {
+            Event::SessionAutoMerged {
                 branch: session_branch.to_string(),
                 into_branch: parent_branch.to_string(),
             },
@@ -680,7 +689,7 @@ fn finalize_session(
         // Leave session branch for review — main working tree untouched
         emit(
             logger,
-            &Event::SessionComplete {
+            Event::SessionComplete {
                 branch: session_branch.to_string(),
             },
         );

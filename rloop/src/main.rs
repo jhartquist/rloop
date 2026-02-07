@@ -441,7 +441,7 @@ fn build_task_file(
 
     if !task.title.is_empty() {
         let escaped_title = task.title.replace('\\', "\\\\").replace('"', "\\\"");
-        writeln!(fm, "title: \"{}\"", escaped_title).expect("write to String never fails");
+        writeln!(fm, "title: \"{escaped_title}\"").expect("write to String never fails");
     }
 
     writeln!(fm, "model: {}", task.model).expect("write to String never fails");
@@ -793,6 +793,7 @@ fn format_elapsed_time(event_idx: usize, _total: usize) -> String {
 }
 
 /// Print an event with elapsed time prefix
+#[allow(clippy::too_many_lines)]
 fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
     use colored::Colorize;
     use rloop::log::Event;
