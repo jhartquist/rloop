@@ -1772,3 +1772,100 @@ async fn parallel_failure_prevents_auto_merge() {
     assert!(result.failed_tasks.contains(&TaskId(1)));
     assert!(result.completed_tasks.contains(&TaskId(2)));
 }
+
+/// Executor that returns an error (not a failed task, but an actual system error)
+/// on specific task IDs to simulate internal failures.
+struct ErrorExecutor {
+    error_tasks: HashSet<TaskId>,
+}
+
+impl ErrorExecutor {
+    fn erroring(error_ids: &[u32]) -> Self {
+        Self {
+            error_tasks: error_ids.iter().map(|&id| TaskId(id)).collect(),
+        }
+    }
+}
+
+impl StepExecutor for ErrorExecutor {
+    async fn execute(
+        &self,
+        task: &Task,
+        _worktree_path: &std::path::Path,
+        _config: &Config,
+        _prior_learnings: &[String],
+    ) -> anyhow::Result<StepResult> {
+        if self.error_tasks.contains(&task.id) {
+            anyhow::bail!("simulated system error for task {}", task.id.0);
+        }
+        Ok(StepResult {
+            task_id: task.id,
+            outcome: StepOutcome::Success {
+                summary: "mock success".into(),
+            },
+            model: Model::Haiku,
+            cost_usd: 0.01,
+            duration: Duration::from_secs(10),
+            input_tokens: 5000,
+            output_tokens: 2000,
+            cache_read_tokens: 1000,
+            cache_creation_tokens: 500,
+            model_id: Some("claude-haiku-4-5-20251001".into()),
+            cc_session_id: Some("mock-session-id".into()),
+            events: vec![],
+        })
+    }
+}
+
+#[tokio::test]
+async fn worktrees_cleaned_up_on_executor_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let tasks_dir = repo.join(".rloop").join("tasks");
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+
+    // Create three independent tasks
+    helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "First"));
+    helpers::create_task_file(&tasks_dir, 1, &helpers::minimal_task(1, "Will error"));
+    helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "Third"));
+    helpers::commit_all(&repo, "add tasks");
+
+    // Task 1 will return a system error (not a failed task outcome)
+    let executor = ErrorExecutor::erroring(&[1]);
+    let config = parallel_config(3); // Allow parallel execution
+
+    let err = run_all_session_with(&repo, &config, false, Arc::new(executor))
+        .await
+        .unwrap_err();
+
+    // Verify the error is the one we expect
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("simulated system error"),
+        "expected simulated error, got: {msg}"
+    );
+
+    // Verify no worktrees remain
+    let worktrees_dir = repo.join(".rloop").join("worktrees");
+    if worktrees_dir.exists() {
+        let entries: Vec<_> = std::fs::read_dir(&worktrees_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "expected all worktrees to be cleaned up, found: {:?}",
+            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    // Verify no worktree branches remain
+    for task_id in [0, 1, 2] {
+        let branch = format!("rloop-wt-{task_id:02}");
+        let exists = rloop::git::branch_exists(&repo, &branch).unwrap();
+        assert!(
+            !exists,
+            "worktree branch {branch} should have been cleaned up"
+        );
+    }
+}

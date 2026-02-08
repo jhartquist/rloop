@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -126,6 +126,9 @@ async fn execute_dag<E: StepExecutor>(
     let mut in_flight: HashSet<TaskId> = HashSet::new();
     let mut metrics = SessionMetrics::default();
 
+    // Track all created worktrees for cleanup on error
+    let mut created_worktrees: Vec<Worktree> = Vec::new();
+
     // Pre-populate completed_set with tasks already marked completed
     for task in tasks {
         if task.completed {
@@ -197,10 +200,39 @@ async fn execute_dag<E: StepExecutor>(
         }
 
         // Await the next completion
-        let result = futures.next().await.expect("futures should not be empty")?;
+        let result = match futures.next().await.expect("futures should not be empty") {
+            Ok(r) => r,
+            Err(e) => {
+                // Error occurred — drain all in-flight futures and clean up their worktrees
+                eprintln!("error during task execution: {e:#}");
+                eprintln!("draining in-flight tasks and cleaning up worktrees...");
+
+                // Drain remaining futures and collect their worktrees for cleanup
+                while let Some(future_result) = futures.next().await {
+                    if let Ok(exec_result) = future_result {
+                        created_worktrees.push(exec_result.worktree);
+                    }
+                }
+
+                // Best-effort cleanup of all created worktrees
+                for worktree in &created_worktrees {
+                    if let Err(cleanup_err) = cleanup_worktree(repo, worktree) {
+                        eprintln!(
+                            "warning: failed to cleanup worktree for task {}: {cleanup_err}",
+                            worktree.task_id
+                        );
+                    }
+                }
+
+                return Err(e);
+            }
+        };
 
         let task_id = result.task_id;
         in_flight.remove(&task_id);
+
+        // Track this worktree for cleanup on error
+        created_worktrees.push(result.worktree.clone());
 
         // Accumulate metrics
         match &result.outcome {
@@ -220,6 +252,9 @@ async fn execute_dag<E: StepExecutor>(
                 cleanup_worktree_preserve_branch(repo, &result.worktree)
                     .with_context(|| format!("failed to cleanup worktree for task {task_id}"))?;
                 emit(logger, Event::WorktreeCleanedUp { task_id });
+
+                // Remove from tracking list (successfully cleaned up)
+                created_worktrees.retain(|wt| wt.task_id != task_id);
 
                 // Look up the task for the merge-fix agent prompt
                 let task = tasks
@@ -270,6 +305,9 @@ async fn execute_dag<E: StepExecutor>(
                             },
                         );
                         // Branch is already preserved (worktree removed above)
+                        // Remove from tracking list (worktree was cleaned up above with preserve_branch)
+                        created_worktrees.retain(|wt| wt.task_id != task_id);
+
                         failed_tasks.push(task_id);
                         failed_set.insert(task_id);
                     }
@@ -280,6 +318,10 @@ async fn execute_dag<E: StepExecutor>(
                     format!("failed to cleanup worktree for failed task {task_id}")
                 })?;
                 emit(logger, Event::WorktreeCleanedUp { task_id });
+
+                // Remove from tracking list (successfully cleaned up)
+                created_worktrees.retain(|wt| wt.task_id != task_id);
+
                 failed_tasks.push(task_id);
                 failed_set.insert(task_id);
             }
@@ -354,6 +396,39 @@ enum TaskOutcome {
     Failed(TaskMetrics),
 }
 
+/// RAII guard that cleans up a worktree on drop (best-effort, logs warnings on failure).
+struct WorktreeCleanupGuard {
+    repo: PathBuf,
+    worktree: Option<Worktree>,
+}
+
+impl WorktreeCleanupGuard {
+    fn new(repo: &Path, worktree: Worktree) -> Self {
+        Self {
+            repo: repo.to_path_buf(),
+            worktree: Some(worktree),
+        }
+    }
+
+    /// Disarm the guard so the worktree won't be cleaned up on drop.
+    fn disarm(&mut self) -> Worktree {
+        self.worktree.take().expect("guard already disarmed")
+    }
+}
+
+impl Drop for WorktreeCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(worktree) = &self.worktree
+            && let Err(e) = cleanup_worktree(&self.repo, worktree)
+        {
+            eprintln!(
+                "warning: failed to cleanup worktree for task {} during error recovery: {e}",
+                worktree.task_id
+            );
+        }
+    }
+}
+
 /// Execute a single task in a worktree without merging. Returns the worktree
 /// and outcome so the caller can serialize merges.
 async fn execute_task_in_worktree<E: StepExecutor>(
@@ -372,6 +447,9 @@ async fn execute_task_in_worktree<E: StepExecutor>(
     // Create worktree off session branch
     let worktree = create_worktree(repo, task_id, session_branch)
         .with_context(|| format!("failed to create worktree for task {task_id}"))?;
+
+    // Guard ensures cleanup on early return/panic
+    let mut cleanup_guard = WorktreeCleanupGuard::new(repo, worktree.clone());
 
     emit(
         logger,
@@ -417,8 +495,12 @@ async fn execute_task_in_worktree<E: StepExecutor>(
         git::git(&worktree.path, &["commit", "-m", &msg])?;
 
         emit(logger, Event::TaskCompleted { task_id, summary });
+        // Disarm guard — caller will handle cleanup
+        let worktree = cleanup_guard.disarm();
         Ok((worktree, TaskOutcome::Success(task_metrics)))
     } else {
+        // Disarm guard — caller will handle cleanup
+        let worktree = cleanup_guard.disarm();
         Ok((worktree, TaskOutcome::Failed(task_metrics)))
     }
 }
