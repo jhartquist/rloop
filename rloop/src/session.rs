@@ -339,18 +339,20 @@ async fn execute_dag<E: StepExecutor>(
                 continue;
             }
             let task = tasks.iter().find(|t| t.id == step_id);
-            if let Some(task) = task
-                && task.depends_on.iter().any(|dep| failed_set.contains(dep))
-            {
-                skipped_tasks.push(step_id);
-                emit(
-                    logger,
-                    Event::TaskFailed {
-                        task_id: step_id,
-                        reason: "blocked by failed dependency".to_string(),
-                    },
-                );
-                failed_set.insert(step_id);
+            if let Some(task) = task {
+                // Find the first failed dependency (there may be multiple)
+                if let Some(&blocked_by) = task.depends_on.iter().find(|dep| failed_set.contains(dep))
+                {
+                    skipped_tasks.push(step_id);
+                    emit(
+                        logger,
+                        Event::TaskSkipped {
+                            task_id: step_id,
+                            blocked_by,
+                        },
+                    );
+                    failed_set.insert(step_id);
+                }
             }
         }
     }

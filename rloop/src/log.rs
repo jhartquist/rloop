@@ -56,6 +56,10 @@ pub enum Event {
         task_id: TaskId,
         reason: String,
     },
+    TaskSkipped {
+        task_id: TaskId,
+        blocked_by: TaskId,
+    },
     WorktreeMerged {
         task_id: TaskId,
         into_branch: String,
@@ -292,6 +296,15 @@ impl SessionLogger {
             }
             Event::TaskFailed { task_id, reason } => {
                 eprintln!("{elapsed}  {} task {task_id} — {reason}", "✗".red());
+            }
+            Event::TaskSkipped {
+                task_id,
+                blocked_by,
+            } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id:02} — blocked by task {blocked_by:02}",
+                    "⊘".yellow()
+                );
             }
             Event::VerificationRan {
                 task_id,
@@ -964,25 +977,29 @@ mod tests {
                 task_id: TaskId(6),
                 reason: "fail".into(),
             },
-            Event::WorktreeMerged {
+            Event::TaskSkipped {
                 task_id: TaskId(7),
+                blocked_by: TaskId(6),
+            },
+            Event::WorktreeMerged {
+                task_id: TaskId(8),
                 into_branch: "main".into(),
             },
-            Event::WorktreeCleanedUp { task_id: TaskId(8) },
+            Event::WorktreeCleanedUp { task_id: TaskId(9) },
             Event::MergeFailed {
-                task_id: TaskId(9),
-                branch: "rloop-wt-09".into(),
+                task_id: TaskId(10),
+                branch: "rloop-wt-10".into(),
                 reason: "conflict in src/main.rs".into(),
             },
             Event::MergeFixStarted {
-                task_id: TaskId(10),
+                task_id: TaskId(11),
             },
             Event::MergeFixSucceeded {
-                task_id: TaskId(10),
+                task_id: TaskId(11),
                 cost_usd: 0.03,
             },
             Event::MergeFixFailed {
-                task_id: TaskId(11),
+                task_id: TaskId(12),
                 reason: "irreconcilable conflict".into(),
             },
             Event::SessionComplete {

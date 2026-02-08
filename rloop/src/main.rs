@@ -822,6 +822,15 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         Event::TaskFailed { task_id, reason } => {
             println!("{elapsed}  {} task {task_id:02} — {reason}", "✗".red());
         }
+        Event::TaskSkipped {
+            task_id,
+            blocked_by,
+        } => {
+            println!(
+                "{elapsed}  {} task {task_id:02} — blocked by task {blocked_by:02}",
+                "⊘".yellow()
+            );
+        }
         Event::ToolCall { name, input } => {
             let param = extract_tool_param(name, input);
             if param.is_empty() {
