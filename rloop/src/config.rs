@@ -156,6 +156,8 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         .and_then(|s| s.max_parallel)
         .unwrap_or(defaults.max_parallel);
 
+    anyhow::ensure!(max_parallel >= 1, "max_parallel must be >= 1");
+
     let Some(step) = file.step else {
         return Ok(Config {
             task: task_config,
@@ -515,5 +517,30 @@ mod tests {
         assert!(template.contains("[session]"));
         assert!(template.contains("max_parallel"));
         assert!(template.contains("--parallel"));
+    }
+
+    #[test]
+    fn load_config_rejects_zero_max_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[session]\nmax_parallel = 0\n",
+        )
+        .unwrap();
+        let result = load_config(dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("max_parallel must be >= 1"));
+    }
+
+    #[test]
+    fn load_config_accepts_one_max_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[session]\nmax_parallel = 1\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.max_parallel, 1);
     }
 }
