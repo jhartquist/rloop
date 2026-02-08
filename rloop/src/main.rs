@@ -1,5 +1,3 @@
-use std::fmt;
-
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
@@ -48,7 +46,7 @@ enum TaskAction {
         description: String,
         /// Model for the enhancement query (overrides config `enhance_model`)
         #[arg(long)]
-        model: Option<ModelArg>,
+        model: Option<rloop::model::Model>,
         /// Additional dependency task IDs applied to all created tasks
         #[arg(long = "depends-on", value_delimiter = ',')]
         depends_on: Vec<u32>,
@@ -66,7 +64,7 @@ enum TaskAction {
         body: Option<String>,
         /// Model for execution (default: Sonnet)
         #[arg(long)]
-        model: Option<ModelArg>,
+        model: Option<rloop::model::Model>,
         /// Dependency task IDs
         #[arg(long = "depends-on", value_delimiter = ',')]
         depends_on: Vec<u32>,
@@ -92,30 +90,6 @@ enum SessionAction {
     },
 }
 
-/// Wrapper for Model CLI parsing (case-insensitive display in help).
-#[derive(Clone)]
-struct ModelArg(rloop::model::Model);
-
-impl fmt::Display for ModelArg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::str::FromStr for ModelArg {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Haiku" | "haiku" => Ok(Self(rloop::model::Model::Haiku)),
-            "Sonnet" | "sonnet" => Ok(Self(rloop::model::Model::Sonnet)),
-            "Opus" | "opus" => Ok(Self(rloop::model::Model::Opus)),
-            _ => Err(format!(
-                "unknown model: {s} (expected Haiku, Sonnet, or Opus)"
-            )),
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -493,7 +467,7 @@ fn cmd_task_add(
     repo: &std::path::Path,
     title: &str,
     body: Option<&str>,
-    model: Option<ModelArg>,
+    model: Option<rloop::model::Model>,
     depends_on: &[u32],
     verification: &[String],
 ) -> anyhow::Result<()> {
@@ -523,7 +497,7 @@ fn cmd_task_add(
     };
 
     // Build frontmatter
-    let model_name = model.map_or(rloop::model::Model::Sonnet, |m| m.0);
+    let model_name = model.unwrap_or(rloop::model::Model::Sonnet);
 
     let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
     let mut fm = format!("---\nid: {id}\ntitle: \"{escaped_title}\"\nmodel: {model_name}\n");
@@ -568,7 +542,7 @@ fn cmd_task_add(
 async fn cmd_task_new(
     repo: &std::path::Path,
     description: &str,
-    model: Option<ModelArg>,
+    model: Option<rloop::model::Model>,
     depends_on: &[u32],
     verification: &[String],
     config: &rloop::config::Config,
@@ -586,7 +560,7 @@ async fn cmd_task_new(
     let next_id = existing_tasks.last().map_or(0, |t| t.id.0 + 1);
 
     // Build and run the LLM enhancement query
-    let enhance_model = model.map_or(config.task.enhance_model, |m| m.0);
+    let enhance_model = model.unwrap_or(config.task.enhance_model);
 
     let prompt = build_enhance_prompt(
         description,

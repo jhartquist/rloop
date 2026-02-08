@@ -1,11 +1,26 @@
-use serde::{Deserialize, Serialize};
-use strum::Display;
+use serde::{Deserialize, Deserializer, Serialize};
+use strum::{Display, EnumString};
 
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, Serialize, Deserialize)]
+/// The Model type for task execution.
+///
+/// Case-insensitive parsing for CLI (via `EnumString`) and config files (via custom deserializer).
+#[derive(Copy, Clone, Debug, Display, EnumString, PartialEq, Eq, Serialize)]
+#[strum(ascii_case_insensitive)]
 pub enum Model {
     Haiku,
     Sonnet,
     Opus,
+}
+
+/// Custom deserializer for case-insensitive parsing in config files.
+impl<'de> Deserialize<'de> for Model {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 #[cfg(test)]
@@ -31,9 +46,40 @@ mod tests {
 
     #[test]
     fn deserialize_lowercase() {
-        // serde default is case-sensitive — "haiku" should fail
-        let result: Result<Model, _> = serde_yaml::from_str("haiku");
-        assert!(result.is_err());
+        // Custom deserializer is case-insensitive
+        let h: Model = serde_yaml::from_str("haiku").unwrap();
+        assert_eq!(h, Model::Haiku);
+        let s: Model = serde_yaml::from_str("sonnet").unwrap();
+        assert_eq!(s, Model::Sonnet);
+        let o: Model = serde_yaml::from_str("opus").unwrap();
+        assert_eq!(o, Model::Opus);
+    }
+
+    #[test]
+    fn deserialize_uppercase() {
+        let h: Model = serde_yaml::from_str("HAIKU").unwrap();
+        assert_eq!(h, Model::Haiku);
+        let s: Model = serde_yaml::from_str("SONNET").unwrap();
+        assert_eq!(s, Model::Sonnet);
+        let o: Model = serde_yaml::from_str("OPUS").unwrap();
+        assert_eq!(o, Model::Opus);
+    }
+
+    #[test]
+    fn parse_from_str_case_insensitive() {
+        use std::str::FromStr;
+
+        assert_eq!(Model::from_str("haiku").unwrap(), Model::Haiku);
+        assert_eq!(Model::from_str("Haiku").unwrap(), Model::Haiku);
+        assert_eq!(Model::from_str("HAIKU").unwrap(), Model::Haiku);
+
+        assert_eq!(Model::from_str("sonnet").unwrap(), Model::Sonnet);
+        assert_eq!(Model::from_str("Sonnet").unwrap(), Model::Sonnet);
+        assert_eq!(Model::from_str("SONNET").unwrap(), Model::Sonnet);
+
+        assert_eq!(Model::from_str("opus").unwrap(), Model::Opus);
+        assert_eq!(Model::from_str("Opus").unwrap(), Model::Opus);
+        assert_eq!(Model::from_str("OPUS").unwrap(), Model::Opus);
     }
 
     #[test]

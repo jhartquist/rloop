@@ -287,6 +287,30 @@ mod tests {
     }
 
     #[test]
+    fn load_lowercase_model() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[step]\nmodel = \"opus\"\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.model, Model::Opus);
+    }
+
+    #[test]
+    fn load_uppercase_model() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[step]\nmodel = \"SONNET\"\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.model, Model::Sonnet);
+    }
+
+    #[test]
     fn init_creates_directory_structure() {
         let dir = tempfile::tempdir().unwrap();
         let rloop_dir = init_rloop_dir(dir.path()).unwrap();
