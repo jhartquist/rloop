@@ -229,31 +229,17 @@ fn print_session_result(result: &rloop::session::SessionResult) {
     }
 
     let m = &result.metrics;
-    let secs = m.duration.as_secs();
-    let dur = if secs >= 60 {
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{secs}s")
-    };
+    let dur = rloop::log::format_duration(m.duration);
     eprintln!("  Duration: {dur}  Cost: ${:.2}", m.cost_usd);
     eprintln!(
         "  Tokens: {} in / {} out / {} cache-read / {} cache-create",
-        fmt_tokens(m.input_tokens),
-        fmt_tokens(m.output_tokens),
-        fmt_tokens(m.cache_read_tokens),
-        fmt_tokens(m.cache_creation_tokens),
+        rloop::log::format_tokens(m.input_tokens),
+        rloop::log::format_tokens(m.output_tokens),
+        rloop::log::format_tokens(m.cache_read_tokens),
+        rloop::log::format_tokens(m.cache_creation_tokens),
     );
 }
 
-fn fmt_tokens(n: u64) -> String {
-    if n >= 1000 {
-        #[allow(clippy::cast_precision_loss)]
-        let k = n as f64 / 1000.0;
-        format!("{k:.0}k")
-    } else {
-        n.to_string()
-    }
-}
 
 /// Best-effort cleanup of the session lock file.
 fn cleanup_lock(repo: &std::path::Path) {
@@ -901,12 +887,12 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             input_tokens,
             output_tokens,
         } => {
-            let dur = format_duration(*duration);
+            let dur = rloop::log::format_duration(*duration);
             println!(
                 "{elapsed}    {} step {step_number}/{max_steps}  {dur}  ${cost_usd:.2}  tokens: {} in / {} out",
                 format!("task {task_id:02}").dimmed(),
-                fmt_tokens(*input_tokens),
-                fmt_tokens(*output_tokens),
+                rloop::log::format_tokens(*input_tokens),
+                rloop::log::format_tokens(*output_tokens),
             );
         }
         Event::TaskSummary {
@@ -923,12 +909,12 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             } else {
                 "failed".red().to_string()
             };
-            let dur = format_duration(*duration);
+            let dur = rloop::log::format_duration(*duration);
             println!(
                 "{elapsed}  {} task {task_id:02}  {status}  {dur}  ${cost_usd:.2}  tokens: {} in / {} out  ({steps} step{})",
                 "─".dimmed(),
-                fmt_tokens(*input_tokens),
-                fmt_tokens(*output_tokens),
+                rloop::log::format_tokens(*input_tokens),
+                rloop::log::format_tokens(*output_tokens),
                 if *steps == 1 { "" } else { "s" },
             );
         }
@@ -941,14 +927,14 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             cache_creation_tokens,
             ..
         } => {
-            let dur = format_duration(*duration);
+            let dur = rloop::log::format_duration(*duration);
             println!("{elapsed}  Duration: {dur}  Cost: ${cost_usd:.2}");
             println!(
                 "          Tokens: {} in / {} out / {} cache-read / {} cache-create",
-                fmt_tokens(*input_tokens),
-                fmt_tokens(*output_tokens),
-                fmt_tokens(*cache_read_tokens),
-                fmt_tokens(*cache_creation_tokens),
+                rloop::log::format_tokens(*input_tokens),
+                rloop::log::format_tokens(*output_tokens),
+                rloop::log::format_tokens(*cache_read_tokens),
+                rloop::log::format_tokens(*cache_creation_tokens),
             );
         }
         Event::MergeFailed {
@@ -984,15 +970,6 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
     }
 }
 
-/// Format a duration as "Xm Ys" or "Xs"
-fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs >= 60 {
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{secs}s")
-    }
-}
 
 /// Extract a meaningful parameter from a tool call
 fn extract_tool_param(name: &str, input: &serde_json::Value) -> String {

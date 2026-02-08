@@ -12,7 +12,6 @@ use claude_agent_sdk_rs::types::messages::ContentBlock;
 use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 
 use crate::config::Config;
 use crate::log::{Event, StreamPrinter};
@@ -162,11 +161,7 @@ fn compute_tool_lists() -> (Vec<String>, Vec<String>) {
     .into_iter()
     .collect();
 
-    let disallowed_builtins: HashSet<BuiltinTool> = BuiltinTool::iter()
-        .collect::<HashSet<_>>()
-        .difference(&allowed_builtins)
-        .copied()
-        .collect();
+    let disallowed_builtins = crate::tool::compute_disallowed_builtins(&allowed_builtins);
 
     let mut allowed: Vec<String> = allowed_builtins.iter().map(ToString::to_string).collect();
     allowed.push("mcp__rloop__complete".to_string());
@@ -249,7 +244,7 @@ fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Messag
 }
 
 /// Extract a `TokenUsage` event from a Claude SDK usage JSON value.
-fn extract_token_usage(usage: &serde_json::Value) -> Event {
+pub(crate) fn extract_token_usage(usage: &serde_json::Value) -> Event {
     Event::TokenUsage {
         input_tokens: get_u64(usage, "input_tokens"),
         output_tokens: get_u64(usage, "output_tokens"),

@@ -157,7 +157,8 @@ pub enum Event {
 }
 
 /// Format a duration as `Xm Ys` or `Xs` for short durations.
-fn format_duration(d: std::time::Duration) -> String {
+#[must_use]
+pub fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs >= 60 {
         format!("{}m {:02}s", secs / 60, secs % 60)
@@ -178,7 +179,8 @@ fn format_elapsed(d: std::time::Duration) -> String {
 }
 
 /// Format a token count with `k` suffix for thousands.
-fn format_tokens(n: u64) -> String {
+#[must_use]
+pub fn format_tokens(n: u64) -> String {
     if n >= 1000 {
         #[allow(clippy::cast_precision_loss)]
         let k = n as f64 / 1000.0;

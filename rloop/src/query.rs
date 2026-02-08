@@ -8,11 +8,9 @@ use claude_agent_sdk_rs::types::messages::ContentBlock;
 use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 
 use crate::log::Event;
 use crate::model::Model;
-use crate::step::get_u64;
 use crate::tool::BuiltinTool;
 
 /// Configuration for a lightweight LLM query.
@@ -39,11 +37,7 @@ pub struct QueryResult {
 /// Compute allowed/disallowed tool lists from the requested tools.
 fn compute_tool_lists(tools: &[BuiltinTool]) -> (Vec<String>, Vec<String>) {
     let allowed: HashSet<BuiltinTool> = tools.iter().copied().collect();
-    let disallowed: HashSet<BuiltinTool> = BuiltinTool::iter()
-        .collect::<HashSet<_>>()
-        .difference(&allowed)
-        .copied()
-        .collect();
+    let disallowed = crate::tool::compute_disallowed_builtins(&allowed);
 
     let allowed: Vec<String> = allowed.iter().map(ToString::to_string).collect();
     let disallowed: Vec<String> = disallowed.iter().map(ToString::to_string).collect();
@@ -51,15 +45,6 @@ fn compute_tool_lists(tools: &[BuiltinTool]) -> (Vec<String>, Vec<String>) {
     (allowed, disallowed)
 }
 
-/// Extract a `TokenUsage` event from a Claude SDK usage JSON value.
-fn extract_token_usage(usage: &serde_json::Value) -> Event {
-    Event::TokenUsage {
-        input_tokens: get_u64(usage, "input_tokens"),
-        output_tokens: get_u64(usage, "output_tokens"),
-        cache_read_input_tokens: get_u64(usage, "cache_read_input_tokens"),
-        cache_creation_input_tokens: get_u64(usage, "cache_creation_input_tokens"),
-    }
-}
 
 /// Collected data from processing the query response stream.
 struct StreamData {
@@ -104,7 +89,7 @@ async fn process_stream(client: &mut ClaudeClient) -> anyhow::Result<StreamData>
                 }
 
                 if let Some(usage) = &m.message.usage {
-                    events.push(extract_token_usage(usage));
+                    events.push(crate::step::extract_token_usage(usage));
                 }
             }
             Message::User(user) => {
@@ -134,9 +119,9 @@ async fn process_stream(client: &mut ClaudeClient) -> anyhow::Result<StreamData>
                 cost_usd = res.total_cost_usd.unwrap_or(0.0);
 
                 if let Some(usage) = &res.usage {
-                    input_tokens = get_u64(usage, "input_tokens");
-                    output_tokens = get_u64(usage, "output_tokens");
-                    events.push(extract_token_usage(usage));
+                    input_tokens = crate::step::get_u64(usage, "input_tokens");
+                    output_tokens = crate::step::get_u64(usage, "output_tokens");
+                    events.push(crate::step::extract_token_usage(usage));
                 }
             }
             _ => {}
