@@ -266,13 +266,13 @@ fn cleanup_worktrees(repo: &std::path::Path) {
             continue;
         };
         // Parse task id from directory name
-        let Ok(id) = name.parse::<u32>() else {
+        let Ok(task_id) = name.parse::<rloop::task::TaskId>() else {
             continue;
         };
         let wt = rloop::git::Worktree {
             path: path.clone(),
             branch: format!("rloop-wt-{name}"),
-            task_id: rloop::task::TaskId(id),
+            task_id,
         };
         if let Err(e) = rloop::git::cleanup_worktree(repo, &wt) {
             eprintln!("warning: failed to cleanup worktree {name}: {e}");

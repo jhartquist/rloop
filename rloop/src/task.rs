@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -8,12 +9,20 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::model::Model;
 
 /// Unique identifier for a task. Sequential number matching the task filename.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TaskId(pub u32);
 
 impl fmt::Display for TaskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:02}", self.0)
+    }
+}
+
+impl FromStr for TaskId {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<u32>().map(TaskId)
     }
 }
 
@@ -166,7 +175,7 @@ pub fn load_all_tasks(dir: impl AsRef<Path>) -> anyhow::Result<Vec<Task>> {
         .map(|p| load_task(&p))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    tasks.sort_by_key(|t| t.id.0);
+    tasks.sort_by_key(|t| t.id);
     Ok(tasks)
 }
 
@@ -353,6 +362,28 @@ mod tests {
     fn task_id_serialize_json() {
         let json = serde_json::to_string(&TaskId(3)).unwrap();
         assert_eq!(json, "3");
+    }
+
+    #[test]
+    fn task_id_from_str() {
+        assert_eq!("0".parse::<TaskId>().unwrap(), TaskId(0));
+        assert_eq!("42".parse::<TaskId>().unwrap(), TaskId(42));
+        assert_eq!("999".parse::<TaskId>().unwrap(), TaskId(999));
+        assert!("".parse::<TaskId>().is_err());
+        assert!("abc".parse::<TaskId>().is_err());
+        assert!("-1".parse::<TaskId>().is_err());
+    }
+
+    #[test]
+    fn task_id_ord() {
+        assert!(TaskId(0) < TaskId(1));
+        assert!(TaskId(1) > TaskId(0));
+        assert!(TaskId(5) <= TaskId(5));
+        assert!(TaskId(5) >= TaskId(5));
+
+        let mut ids = vec![TaskId(3), TaskId(1), TaskId(2), TaskId(0)];
+        ids.sort();
+        assert_eq!(ids, vec![TaskId(0), TaskId(1), TaskId(2), TaskId(3)]);
     }
 
     // --- load_task tests (will fail — todo) ---
