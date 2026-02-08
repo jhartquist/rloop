@@ -104,7 +104,8 @@ impl SessionLock {
         Ok(())
     }
 
-    /// Path to the lock file.
+    /// Path to the lock file (test-only).
+    #[cfg(test)]
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path

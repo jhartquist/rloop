@@ -2,15 +2,16 @@
 
 pub mod config;
 pub mod git;
-pub mod lock;
+pub(crate) mod lock;
 pub mod log;
-pub mod merge;
+pub(crate) mod merge;
 pub mod model;
 pub mod query;
 pub mod session;
 pub mod step;
 pub mod task;
 pub mod template;
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tool;
-pub mod tools;
+pub(crate) mod tools;
