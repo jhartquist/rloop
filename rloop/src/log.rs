@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use anyhow::Context as _;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
@@ -206,9 +207,11 @@ impl SessionLogger {
     /// Returns an error if directory creation or file opening fails.
     pub fn new(session_dir: impl AsRef<Path>, session_id: SessionId) -> anyhow::Result<Self> {
         let session_dir = session_dir.as_ref();
-        std::fs::create_dir_all(session_dir)?;
+        std::fs::create_dir_all(session_dir)
+            .with_context(|| format!("failed to create session directory {}", session_dir.display()))?;
         let path = session_dir.join(format!("{session_id}.jsonl"));
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)
+            .with_context(|| format!("failed to open session log file {}", path.display()))?;
         Ok(Self {
             writer: BufWriter::new(file),
             _session_id: session_id,

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Model;
@@ -137,8 +138,10 @@ pub fn load_config(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
         return Ok(Config::default());
     }
 
-    let contents = fs::read_to_string(&config_path)?;
-    let file: ConfigFile = toml::from_str(&contents)?;
+    let contents = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let file: ConfigFile = toml::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
     let defaults = Config::default();
 
     let task_config = match file.task {
@@ -203,17 +206,20 @@ pub fn init_rloop_dir(repo: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
     let rloop_dir = repo.join(".rloop");
 
     for subdir in &["tasks", "worktrees", "sessions"] {
-        fs::create_dir_all(rloop_dir.join(subdir))?;
+        fs::create_dir_all(rloop_dir.join(subdir))
+            .with_context(|| format!("failed to create {subdir} directory"))?;
     }
 
     let config_path = rloop_dir.join("config.toml");
     if !config_path.exists() {
-        fs::write(&config_path, default_config_template())?;
+        fs::write(&config_path, default_config_template())
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
     }
 
     let gitignore_path = rloop_dir.join(".gitignore");
     if !gitignore_path.exists() {
-        fs::write(&gitignore_path, "worktrees/\nsessions/\n.lock\n")?;
+        fs::write(&gitignore_path, "worktrees/\nsessions/\n.lock\n")
+            .with_context(|| format!("failed to write {}", gitignore_path.display()))?;
     }
 
     // Commit scaffolding (idempotent — only commits if there are staged changes).
