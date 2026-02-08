@@ -51,7 +51,7 @@ pub struct StepResult {
 
 /// Serialize `Duration` as seconds (f64) for JSON compatibility.
 #[allow(clippy::missing_errors_doc)]
-pub mod duration_serde {
+pub(crate) mod duration_serde {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serializer};
@@ -257,7 +257,7 @@ pub(crate) fn extract_token_usage(usage: &serde_json::Value) -> Event {
 const CONTEXT_WINDOW: f64 = 200_000.0;
 
 /// Extract a u64 from a JSON value by key, defaulting to 0.
-pub fn get_u64(value: &serde_json::Value, key: &str) -> u64 {
+pub(crate) fn get_u64(value: &serde_json::Value, key: &str) -> u64 {
     value
         .get(key)
         .and_then(serde_json::Value::as_u64)

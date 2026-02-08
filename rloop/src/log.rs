@@ -598,18 +598,18 @@ impl StreamPrinter {
     ///
     /// When `max_parallel > 1`, pass `Some(task_id)` to prefix output lines.
     /// When `max_parallel == 1`, pass `None` to avoid noise.
-    pub fn set_task_prefix(&mut self, task_id: Option<crate::task::TaskId>) {
+    pub(crate) fn set_task_prefix(&mut self, task_id: Option<crate::task::TaskId>) {
         self.task_prefix = task_id.map_or_else(String::new, |id| format!("[task {id:02}] "));
     }
 
     /// Register a tool call so its result can be correlated later.
-    pub fn register_tool_call(&mut self, id: &str, name: &str, input: &serde_json::Value) {
+    pub(crate) fn register_tool_call(&mut self, id: &str, name: &str, input: &serde_json::Value) {
         self.pending_tools
             .insert(id.to_string(), (name.to_string(), input.clone()));
     }
 
     /// Look up and remove a pending tool call by its ID.
-    pub fn take_pending_tool(&mut self, id: &str) -> Option<(String, serde_json::Value)> {
+    pub(crate) fn take_pending_tool(&mut self, id: &str) -> Option<(String, serde_json::Value)> {
         self.pending_tools.remove(id)
     }
 
