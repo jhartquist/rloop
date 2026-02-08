@@ -132,7 +132,7 @@ fn build_merge_fix_prompt(task: &Task, worktree_path: &Path) -> String {
     };
 
     format!(
-        r"You are resolving a git merge conflict. During parallel task execution, this task's branch diverged from the session branch. A rebase was attempted but failed due to conflicts. The working directory now contains files with conflict markers (<<<<<<< ======= >>>>>>>).
+        r"You are resolving a git merge conflict. During parallel task execution, this task's branch diverged from the session branch. The working directory now contains files with conflict markers (<<<<<<< ======= >>>>>>>).
 
 Task: {title}
 
