@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(ids, vec![TaskId(0), TaskId(1), TaskId(2), TaskId(3)]);
     }
 
-    // --- load_task tests (will fail — todo) ---
+    // --- load_task tests ---
 
     fn write_task_file(dir: &Path, filename: &str, content: &str) -> PathBuf {
         let path = dir.join(filename);
@@ -509,7 +509,7 @@ Do the thing.
         assert_eq!(task.source_path, path);
     }
 
-    // --- load_all_tasks tests (will fail — todo) ---
+    // --- load_all_tasks tests ---
 
     #[test]
     fn load_all_empty_dir() {
@@ -538,7 +538,7 @@ Do the thing.
         assert_eq!(tasks.len(), 1);
     }
 
-    // --- resolve_dag tests (will fail — todo) ---
+    // --- resolve_dag tests ---
 
     fn make_task(id: u32, deps: &[u32]) -> Task {
         Task {
