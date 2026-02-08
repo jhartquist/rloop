@@ -882,9 +882,8 @@ fn finalize_session(
     logger: &EventSender,
 ) -> anyhow::Result<bool> {
     if auto_merge && failed_tasks.is_empty() && skipped_tasks.is_empty() {
-        // Fast-forward parent to session tip, then clean up session branch
-        git::git(repo, &["checkout", parent_branch])
-            .with_context(|| format!("failed to checkout {parent_branch}"))?;
+        // Fast-forward merge: we're already on parent_branch (main worktree never
+        // left it during the session), so this updates both ref and working tree.
         git::git(repo, &["merge", "--ff-only", session_branch]).with_context(|| {
             format!("failed to auto-merge {session_branch} into {parent_branch}")
         })?;
