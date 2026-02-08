@@ -1,5 +1,5 @@
-use std::fs;
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -32,51 +32,69 @@ impl SessionLock {
     pub fn acquire(rloop_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = rloop_dir.as_ref().join(".lock");
 
-        if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(contents) => {
-                    if let Ok(info) = serde_json::from_str::<LockInfo>(&contents) {
-                        if is_process_alive(info.pid) {
-                            bail!(
-                                "another rloop session is running (pid {}, started {}). \
-                                 If this is stale, remove {}",
-                                info.pid,
-                                info.started_at,
-                                path.display()
-                            );
-                        }
-                        // Stale lock — owning process is dead
-                        eprintln!(
-                            "warning: removing stale lock from pid {} (started {})",
-                            info.pid, info.started_at
-                        );
-                    }
-                    // Malformed or stale — remove it
-                    fs::remove_file(&path).with_context(|| {
-                        format!("failed to remove stale lock {}", path.display())
-                    })?;
+        // Loop to handle stale lock removal + retry
+        loop {
+            let info = LockInfo {
+                pid: std::process::id(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+            };
+
+            // Atomically create the lock file. This fails if the file already exists.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    // Success — we acquired the lock
+                    let json =
+                        serde_json::to_string(&info).context("failed to serialize lock info")?;
+                    file.write_all(json.as_bytes())
+                        .with_context(|| format!("failed to write lock file {}", path.display()))?;
+                    return Ok(Self { path });
                 }
-                Err(_) => {
-                    // Can't read — try to remove
-                    if let Err(e) = fs::remove_file(&path) {
-                        eprintln!("warning: failed to remove unreadable lock file: {e}");
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    // Lock file exists — check if it's stale
+                    if let Ok(contents) = fs::read_to_string(&path) {
+                        if let Ok(lock_info) = serde_json::from_str::<LockInfo>(&contents) {
+                            if is_process_alive(lock_info.pid) {
+                                bail!(
+                                    "another rloop session is running (pid {}, started {}). \
+                                     If this is stale, remove {}",
+                                    lock_info.pid,
+                                    lock_info.started_at,
+                                    path.display()
+                                );
+                            }
+                            // Stale lock — owning process is dead
+                            eprintln!(
+                                "warning: removing stale lock from pid {} (started {})",
+                                lock_info.pid, lock_info.started_at
+                            );
+                        } else {
+                            eprintln!("warning: removing malformed lock file");
+                        }
+                        // Remove the stale/malformed lock and retry
+                        fs::remove_file(&path).with_context(|| {
+                            format!("failed to remove stale lock {}", path.display())
+                        })?;
+                        // Loop back to retry acquisition
+                    } else {
+                        // Can't read — try to remove
+                        eprintln!("warning: removing unreadable lock file");
+                        if let Err(e) = fs::remove_file(&path) {
+                            eprintln!("warning: failed to remove unreadable lock file: {e}");
+                        }
+                        // Loop back to retry acquisition
                     }
+                }
+                Err(e) => {
+                    // Other error (permissions, etc.)
+                    return Err(e)
+                        .with_context(|| format!("failed to create lock file {}", path.display()));
                 }
             }
         }
-
-        let info = LockInfo {
-            pid: std::process::id(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        let mut file = fs::File::create(&path)
-            .with_context(|| format!("failed to create lock file {}", path.display()))?;
-        let json = serde_json::to_string(&info).context("failed to serialize lock info")?;
-        file.write_all(json.as_bytes())
-            .with_context(|| format!("failed to write lock file {}", path.display()))?;
-
-        Ok(Self { path })
     }
 
     /// Release the lock by removing the lock file.
