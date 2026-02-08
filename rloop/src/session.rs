@@ -112,7 +112,6 @@ async fn execute_dag<E: StepExecutor>(
     tasks: &[Task],
     steps: &[TaskId],
     session_branch: &str,
-    parent_branch: &str,
     config: &Config,
     logger: &EventSender,
     executor: Arc<E>,
@@ -251,15 +250,6 @@ async fn execute_dag<E: StepExecutor>(
 
         match result.outcome {
             TaskOutcome::Success(_) => {
-                // Remove the worktree directory but keep the branch — can't rebase
-                // a branch that's checked out in a worktree.
-                cleanup_worktree_preserve_branch(repo, &result.worktree)
-                    .with_context(|| format!("failed to cleanup worktree for task {task_id}"))?;
-                emit(logger, Event::WorktreeCleanedUp { task_id });
-
-                // Remove from tracking list (successfully cleaned up)
-                created_worktrees.retain(|wt| wt.task_id != task_id);
-
                 // Look up the task for the merge-fix agent prompt
                 let task = tasks
                     .iter()
@@ -267,26 +257,29 @@ async fn execute_dag<E: StepExecutor>(
                     .with_context(|| format!("task {task_id} not found for merge"))?;
 
                 // Serialize merge via mutex: rebase -> merge-fix agent -> fail
+                // Pass the worktree path so rebase runs there (not in main worktree)
                 let _guard = merge_mutex.lock().await;
                 let merge_result = merge::merge_with_fix(
                     repo,
                     task,
                     &result.worktree.branch,
                     session_branch,
-                    parent_branch,
+                    &result.worktree.path,
                     logger,
                 )
                 .await;
 
                 match merge_result {
                     Ok(()) => {
-                        // Clean up the branch now that it's merged
-                        if let Err(e) = git::git(repo, &["branch", "-D", &result.worktree.branch]) {
-                            eprintln!(
-                                "warning: failed to delete branch {}: {e}",
-                                result.worktree.branch
-                            );
-                        }
+                        // Clean up the worktree (including branch) now that it's merged
+                        cleanup_worktree(repo, &result.worktree).with_context(|| {
+                            format!("failed to cleanup worktree for task {task_id}")
+                        })?;
+                        emit(logger, Event::WorktreeCleanedUp { task_id });
+
+                        // Remove from tracking list (successfully cleaned up)
+                        created_worktrees.retain(|wt| wt.task_id != task_id);
+
                         completed_tasks.push(task_id);
                         completed_set.insert(task_id);
                     }
@@ -307,8 +300,14 @@ async fn execute_dag<E: StepExecutor>(
                                 reason: format!("merge failed: {reason}"),
                             },
                         );
-                        // Branch is already preserved (worktree removed above)
-                        // Remove from tracking list (worktree was cleaned up above with preserve_branch)
+
+                        // Keep branch for recovery but remove worktree
+                        cleanup_worktree_preserve_branch(repo, &result.worktree).with_context(
+                            || format!("failed to cleanup worktree for task {task_id}"),
+                        )?;
+                        emit(logger, Event::WorktreeCleanedUp { task_id });
+
+                        // Remove from tracking list (worktree cleaned up)
                         created_worktrees.retain(|wt| wt.task_id != task_id);
 
                         failed_tasks.push(task_id);
@@ -341,7 +340,8 @@ async fn execute_dag<E: StepExecutor>(
             let task = tasks.iter().find(|t| t.id == step_id);
             if let Some(task) = task {
                 // Find the first failed dependency (there may be multiple)
-                if let Some(&blocked_by) = task.depends_on.iter().find(|dep| failed_set.contains(dep))
+                if let Some(&blocked_by) =
+                    task.depends_on.iter().find(|dep| failed_set.contains(dep))
                 {
                     skipped_tasks.push(step_id);
                     emit(
@@ -366,7 +366,6 @@ async fn execute_dag<E: StepExecutor>(
         metrics,
     })
 }
-
 
 // ---------------------------------------------------------------------------
 // Task execution (single task within a session)
@@ -610,7 +609,14 @@ pub async fn run_session(
     config: &Config,
     auto_merge: bool,
 ) -> anyhow::Result<SessionResult> {
-    run_session_with(repo, target_task, config, auto_merge, Arc::new(RealStepExecutor)).await
+    run_session_with(
+        repo,
+        target_task,
+        config,
+        auto_merge,
+        Arc::new(RealStepExecutor),
+    )
+    .await
 }
 
 /// Run a session with a custom executor (for testing).
@@ -677,7 +683,6 @@ pub async fn run_session_with<E: StepExecutor>(
         &tasks,
         &plan.steps,
         &session_branch,
-        &parent_branch,
         config,
         &logger,
         executor,
@@ -822,7 +827,6 @@ pub async fn run_all_session_with<E: StepExecutor>(
         &tasks,
         &plan.steps,
         &session_branch,
-        &parent_branch,
         config,
         &logger,
         executor,

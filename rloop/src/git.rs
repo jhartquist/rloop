@@ -177,17 +177,16 @@ pub fn fast_forward_ref(repo: impl AsRef<Path>, branch: &str, to_ref: &str) -> a
     Ok(())
 }
 
-/// Rebase `branch` onto `onto`. Both must be valid refs.
+/// Rebase the current HEAD onto `onto`.
 ///
-/// Runs `git rebase <onto> <branch>` from the repo root.
-/// If the rebase has no conflicts, this is a no-op when `branch` is already
-/// a descendant of `onto`.
+/// Runs `git rebase <onto>` in the given directory (typically a worktree).
+/// The current branch is rebased onto `onto`.
 ///
 /// # Errors
 /// Returns an error if the rebase fails (typically a merge conflict).
-pub fn rebase(repo: impl AsRef<Path>, branch: &str, onto: &str) -> anyhow::Result<()> {
-    git(repo.as_ref(), &["rebase", onto, branch])
-        .with_context(|| format!("failed to rebase {branch} onto {onto}"))?;
+pub fn rebase(dir: impl AsRef<Path>, onto: &str) -> anyhow::Result<()> {
+    git(dir.as_ref(), &["rebase", onto])
+        .with_context(|| format!("failed to rebase onto {onto}"))?;
     Ok(())
 }
 

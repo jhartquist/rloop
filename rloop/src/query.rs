@@ -9,9 +9,9 @@ use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use crate::builtin_tool::BuiltinTool;
 use crate::log::Event;
 use crate::model::Model;
-use crate::builtin_tool::BuiltinTool;
 
 /// Configuration for a lightweight LLM query.
 pub struct QueryConfig {
@@ -44,7 +44,6 @@ fn compute_tool_lists(tools: &[BuiltinTool]) -> (Vec<String>, Vec<String>) {
 
     (allowed, disallowed)
 }
-
 
 /// Collected data from processing the query response stream.
 struct StreamData {

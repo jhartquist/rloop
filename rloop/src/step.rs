@@ -13,11 +13,11 @@ use claude_agent_sdk_rs::{ClaudeAgentOptions, ClaudeClient, Message};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use crate::builtin_tool::BuiltinTool;
 use crate::config::Config;
 use crate::log::{Event, StreamPrinter};
 use crate::model::Model;
 use crate::task::{Task, TaskId};
-use crate::builtin_tool::BuiltinTool;
 use crate::tools::create_tools;
 
 /// Outcome of a single step (one execution attempt of a task).
@@ -86,7 +86,9 @@ impl<E: StepExecutor> StepExecutor for std::sync::Arc<E> {
         config: &Config,
         prior_learnings: &[String],
     ) -> anyhow::Result<StepResult> {
-        (**self).execute(task, worktree_path, config, prior_learnings).await
+        (**self)
+            .execute(task, worktree_path, config, prior_learnings)
+            .await
     }
 }
 
@@ -570,8 +572,15 @@ pub async fn execute_step(
     } else {
         None
     };
-    let mut data =
-        process_stream(&mut client, &stop, &context_pct, worktree_path, task_prefix, task.model).await?;
+    let mut data = process_stream(
+        &mut client,
+        &stop,
+        &context_pct,
+        worktree_path,
+        task_prefix,
+        task.model,
+    )
+    .await?;
     // Best-effort disconnect — session data already captured
     if let Err(e) = client.disconnect().await {
         eprintln!("warning: failed to disconnect Claude client: {e}");

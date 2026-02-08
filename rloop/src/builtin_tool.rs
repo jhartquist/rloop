@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use strum::{Display, EnumIter, IntoEnumIterator, EnumString};
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 #[derive(Copy, Clone, Debug, Display, EnumIter, EnumString, PartialEq, Eq, Hash)]
 pub enum BuiltinTool {
@@ -28,9 +28,7 @@ pub enum BuiltinTool {
 /// `all_builtins - allowed_builtins`.
 ///
 /// Returns the disallowed set.
-pub(crate) fn compute_disallowed_builtins(
-    allowed: &HashSet<BuiltinTool>,
-) -> HashSet<BuiltinTool> {
+pub(crate) fn compute_disallowed_builtins(allowed: &HashSet<BuiltinTool>) -> HashSet<BuiltinTool> {
     BuiltinTool::iter()
         .collect::<HashSet<_>>()
         .difference(allowed)

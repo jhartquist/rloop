@@ -297,11 +297,7 @@ mod tests {
     #[test]
     fn load_lowercase_model() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "[step]\nmodel = \"opus\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[step]\nmodel = \"opus\"\n").unwrap();
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.model, Model::Opus);
     }
@@ -529,7 +525,12 @@ mod tests {
         .unwrap();
         let result = load_config(dir.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("max_parallel must be >= 1"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_parallel must be >= 1")
+        );
     }
 
     #[test]

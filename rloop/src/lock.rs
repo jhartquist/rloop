@@ -40,11 +40,7 @@ impl SessionLock {
             };
 
             // Atomically create the lock file. This fails if the file already exists.
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
                     // Success — we acquired the lock
                     let json =

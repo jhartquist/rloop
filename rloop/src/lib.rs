@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 
+pub mod builtin_tool;
 pub mod config;
 pub mod git;
 pub(crate) mod lock;
@@ -13,5 +14,4 @@ pub mod task;
 pub mod template;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-pub mod builtin_tool;
 pub(crate) mod tools;

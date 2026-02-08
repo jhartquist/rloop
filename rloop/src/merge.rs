@@ -2,12 +2,12 @@ use std::path::Path;
 
 use anyhow::Context;
 
+use crate::builtin_tool::BuiltinTool;
 use crate::git;
 use crate::log::{Event, EventSender};
 use crate::model::Model;
 use crate::query::{QueryConfig, run_query};
-use crate::task::{Task, TaskId};
-use crate::builtin_tool::BuiltinTool;
+use crate::task::Task;
 
 /// Attempt to resolve merge conflicts using a lightweight LLM agent.
 ///
@@ -163,6 +163,8 @@ If you cannot resolve the conflicts cleanly, explain why in your response.",
 /// 2. On rebase conflict: abort rebase, invoke merge-fix agent
 /// 3. On merge-fix failure: mark as failed, preserve branch
 ///
+/// All git operations run in the task worktree — the main worktree is never modified.
+///
 /// Returns `Ok(())` on success (session branch updated), `Err` on failure.
 ///
 /// # Errors
@@ -173,42 +175,26 @@ pub async fn merge_with_fix(
     task: &Task,
     task_branch: &str,
     session_branch: &str,
-    parent_branch: &str,
+    worktree_path: &Path,
     logger: &EventSender,
 ) -> anyhow::Result<()> {
     let task_id = task.id;
 
-    // Phase 1: Rebase
-    if let Err(rebase_err) = git::rebase(repo, task_branch, session_branch) {
+    // Phase 1: Rebase (runs in the task worktree, not main worktree)
+    if let Err(rebase_err) = git::rebase(worktree_path, session_branch) {
         // Rebase failed — abort it
-        if let Err(abort_err) = git::rebase_abort(repo) {
+        if let Err(abort_err) = git::rebase_abort(worktree_path) {
             eprintln!("warning: failed to abort rebase for task {task_id}: {abort_err}");
         }
-        // Restore main worktree to parent branch after failed rebase
-        let _ = git::git(repo, &["checkout", parent_branch]);
 
-        // Phase 2: Merge-fix agent
-        // The task's worktree was already cleaned up before merge, so create
-        // a temporary one branched off the task branch.
-        let temp_wt = create_temp_merge_worktree(repo, task_id, task_branch)?;
-
-        let resolved = attempt_merge_fix(&temp_wt, task, session_branch, logger).await?;
+        // Phase 2: Merge-fix agent (runs in the same task worktree)
+        let resolved = attempt_merge_fix(worktree_path, task, session_branch, logger).await?;
 
         if resolved {
-            // Get the merge-fix worktree's branch tip
-            let tip = git::git(&temp_wt, &["rev-parse", "HEAD"])
-                .context("failed to get merge-fix worktree HEAD")?;
-
-            // Clean up temp worktree before updating refs
-            cleanup_temp_merge_worktree(repo, &temp_wt, task_id);
-
-            // Fast-forward session branch to the merged tip
-            git::fast_forward_ref(repo, session_branch, &tip).with_context(|| {
+            // Fast-forward session branch to the task worktree's HEAD
+            git::fast_forward_ref(repo, session_branch, task_branch).with_context(|| {
                 format!("failed to fast-forward session branch after merge-fix for task {task_id}")
             })?;
-
-            // Restore parent branch checkout
-            let _ = git::git(repo, &["checkout", parent_branch]);
 
             logger.send(Event::WorktreeMerged {
                 task_id,
@@ -218,9 +204,6 @@ pub async fn merge_with_fix(
             return Ok(());
         }
 
-        // Clean up temp worktree on failure
-        cleanup_temp_merge_worktree(repo, &temp_wt, task_id);
-
         // Phase 3: Fail
         return Err(rebase_err.context("rebase failed and merge-fix agent could not resolve"));
     }
@@ -229,59 +212,10 @@ pub async fn merge_with_fix(
     git::fast_forward_ref(repo, session_branch, task_branch)
         .with_context(|| format!("failed to fast-forward session branch for task {task_id}"))?;
 
-    // Restore main worktree to parent branch
-    git::git(repo, &["checkout", parent_branch]).with_context(|| {
-        format!("failed to restore {parent_branch} after merging task {task_id}")
-    })?;
-
     logger.send(Event::WorktreeMerged {
         task_id,
         into_branch: session_branch.to_string(),
     });
 
     Ok(())
-}
-
-/// Create a temporary worktree for the merge-fix agent.
-///
-/// Branches off the task branch so the agent has the task's work as a starting point.
-fn create_temp_merge_worktree(
-    repo: &Path,
-    task_id: TaskId,
-    task_branch: &str,
-) -> anyhow::Result<std::path::PathBuf> {
-    let label = format!("{task_id:02}-mergefix");
-    let worktree_dir = repo.join(".rloop").join("worktrees");
-    std::fs::create_dir_all(&worktree_dir)?;
-
-    let wt_path = worktree_dir.join(&label);
-    let branch = format!("rloop-mergefix-{task_id:02}");
-
-    git::git(
-        repo,
-        &[
-            "worktree",
-            "add",
-            wt_path.to_str().context("non-UTF-8 path")?,
-            "-b",
-            &branch,
-            task_branch,
-        ],
-    )
-    .with_context(|| format!("failed to create merge-fix worktree for task {task_id}"))?;
-
-    Ok(wt_path)
-}
-
-/// Clean up a temporary merge-fix worktree (best-effort).
-fn cleanup_temp_merge_worktree(repo: &Path, wt_path: &Path, task_id: TaskId) {
-    let wt_str = wt_path.to_str().unwrap_or("");
-    let branch = format!("rloop-mergefix-{task_id:02}");
-
-    if let Err(e) = git::git(repo, &["worktree", "remove", wt_str, "--force"]) {
-        eprintln!("warning: failed to remove merge-fix worktree for task {task_id}: {e}");
-    }
-    if let Err(e) = git::git(repo, &["branch", "-D", &branch]) {
-        eprintln!("warning: failed to delete merge-fix branch for task {task_id}: {e}");
-    }
 }

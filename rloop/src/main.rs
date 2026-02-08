@@ -90,7 +90,6 @@ enum SessionAction {
     },
 }
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Ensure panics are always visible on stderr, even if a TUI or alternate
@@ -239,7 +238,6 @@ fn print_session_result(result: &rloop::session::SessionResult) {
         rloop::log::format_tokens(m.cache_creation_tokens),
     );
 }
-
 
 /// Best-effort cleanup of the session lock file.
 fn cleanup_lock(repo: &std::path::Path) {
@@ -680,7 +678,7 @@ fn cmd_task_show(id: u32) -> anyhow::Result<()> {
     }
 
     if let Some(ref cmds) = task.verification {
-        println!("Verify:     {}", cmds);
+        println!("Verify:     {cmds}");
     } else {
         println!("Verify:     (none)");
     }
@@ -765,6 +763,7 @@ fn cmd_session_show(session_id: &str) -> anyhow::Result<()> {
 
 /// Format elapsed time from a chrono Duration as a right-aligned string.
 fn format_elapsed_from_duration(duration: chrono::Duration) -> String {
+    #[allow(clippy::cast_sign_loss)]
     let secs = duration.num_seconds().max(0) as u64;
 
     let time_str = if secs >= 60 {
@@ -990,7 +989,6 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         Event::PromptSent { .. } | Event::TokenUsage { .. } => {}
     }
 }
-
 
 /// Extract a meaningful parameter from a tool call
 fn extract_tool_param(name: &str, input: &serde_json::Value) -> String {

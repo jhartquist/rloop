@@ -1,8 +1,8 @@
 mod helpers;
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rloop::config::Config;
@@ -85,9 +85,15 @@ async fn single_task_no_deps() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
     assert!(result.failed_tasks.is_empty());
     // Main working tree stays on original branch
@@ -115,9 +121,15 @@ async fn linear_chain() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(2),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.completed_tasks.len(), 3);
 }
 
@@ -141,9 +153,15 @@ async fn skip_completed_deps() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(1), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(1),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(!result.completed_tasks.contains(&TaskId(0)));
     assert!(result.completed_tasks.contains(&TaskId(1)));
 }
@@ -169,9 +187,15 @@ async fn failure_blocks_dependents() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(2),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
     assert!(result.failed_tasks.contains(&TaskId(1)));
     assert!(result.skipped_tasks.contains(&TaskId(2)));
@@ -205,9 +229,15 @@ async fn failure_continues_unblocked() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
-    let result = run_session_with(&repo, TaskId(3), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(3),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
     assert!(result.failed_tasks.contains(&TaskId(1)));
     assert!(result.completed_tasks.contains(&TaskId(2)));
@@ -224,9 +254,15 @@ async fn session_branch_naming() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(5), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(5),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.branch, "rloop-05");
     // Main working tree untouched
     assert_eq!(rloop::git::current_branch(&repo).unwrap(), "main");
@@ -242,9 +278,15 @@ async fn auto_merge_on_success() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), true, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        true,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(result.auto_merged);
 }
 
@@ -258,9 +300,15 @@ async fn auto_merge_skipped_on_failure() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[0]);
-    let result = run_session_with(&repo, TaskId(0), &default_config(), true, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        true,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     assert!(!result.auto_merged);
     assert!(result.failed_tasks.contains(&TaskId(0)));
 }
@@ -277,9 +325,15 @@ async fn session_logs_events() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let _result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let _result = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
     let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
         .unwrap()
         .filter_map(Result::ok)
@@ -377,9 +431,15 @@ async fn session_fails_on_no_commits() {
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
 
     let executor = MockExecutor::all_succeed();
-    let err = run_session_with(dir.path(), TaskId(0), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap_err();
+    let err = run_session_with(
+        dir.path(),
+        TaskId(0),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("no commits"),
@@ -400,9 +460,15 @@ async fn session_fails_on_dirty_worktree() {
     std::fs::write(repo.join("dirty.txt"), "uncommitted\n").unwrap();
 
     let executor = MockExecutor::all_succeed();
-    let err = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap_err();
+    let err = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("uncommitted"),
@@ -420,9 +486,15 @@ async fn metrics_accumulate_for_single_task() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(0),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
 
     let m = &result.metrics;
     // MockExecutor returns cost_usd=0.01, input_tokens=5000, output_tokens=2000,
@@ -456,9 +528,15 @@ async fn metrics_accumulate_across_tasks() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(2),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
 
     let m = &result.metrics;
     // 3 tasks × 0.01 cost each
@@ -505,6 +583,7 @@ async fn metrics_include_failed_tasks() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn session_log_contains_metric_events() {
     let dir = tempfile::tempdir().unwrap();
     let repo = helpers::init_git_repo(dir.path());
@@ -521,9 +600,15 @@ async fn session_log_contains_metric_events() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(1), &default_config(), false, Arc::new(executor))
-        .await
-        .unwrap();
+    let result = run_session_with(
+        &repo,
+        TaskId(1),
+        &default_config(),
+        false,
+        Arc::new(executor),
+    )
+    .await
+    .unwrap();
 
     // Find the session log file
     let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
@@ -1855,7 +1940,10 @@ async fn worktrees_cleaned_up_on_executor_error() {
         assert!(
             entries.is_empty(),
             "expected all worktrees to be cleaned up, found: {:?}",
-            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            entries
+                .iter()
+                .map(std::fs::DirEntry::file_name)
+                .collect::<Vec<_>>()
         );
     }
 
