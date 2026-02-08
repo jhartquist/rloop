@@ -12,6 +12,16 @@ pub enum Model {
     Opus,
 }
 
+impl Model {
+    /// Returns the context window size in tokens for this model.
+    #[must_use]
+    pub const fn context_window(self) -> u64 {
+        match self {
+            Self::Haiku | Self::Sonnet | Self::Opus => 200_000,
+        }
+    }
+}
+
 /// Custom deserializer for case-insensitive parsing in config files.
 impl<'de> Deserialize<'de> for Model {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -86,5 +96,12 @@ mod tests {
     fn deserialize_invalid() {
         let result: Result<Model, _> = serde_yaml::from_str("gpt4");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn context_window_sizes() {
+        assert_eq!(Model::Haiku.context_window(), 200_000);
+        assert_eq!(Model::Sonnet.context_window(), 200_000);
+        assert_eq!(Model::Opus.context_window(), 200_000);
     }
 }

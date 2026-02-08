@@ -253,9 +253,6 @@ pub(crate) fn extract_token_usage(usage: &serde_json::Value) -> Event {
     }
 }
 
-/// Claude models typically have a 200k token context window.
-const CONTEXT_WINDOW: f64 = 200_000.0;
-
 /// Extract a u64 from a JSON value by key, defaulting to 0.
 pub(crate) fn get_u64(value: &serde_json::Value, key: &str) -> u64 {
     value
@@ -275,6 +272,8 @@ struct ContextTracker {
     last_percentage: f32,
     /// Thresholds that have already been crossed and printed.
     thresholds_crossed: [bool; 3], // 50%, 70%, 90%
+    /// Context window size for the model being used.
+    context_window: u64,
 }
 
 /// Context usage thresholds for terminal alerts.
@@ -285,11 +284,12 @@ const CONTEXT_THRESHOLDS: [(usize, f32, &str); 3] = [
 ];
 
 impl ContextTracker {
-    fn new() -> Self {
+    fn new(model: Model) -> Self {
         Self {
             last_message_id: None,
             last_percentage: 0.0,
             thresholds_crossed: [false; 3],
+            context_window: model.context_window(),
         }
     }
 
@@ -310,8 +310,10 @@ impl ContextTracker {
 
         #[allow(clippy::cast_precision_loss)]
         let used = (input + cache_read) as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let context_window_f64 = self.context_window as f64;
         #[allow(clippy::cast_possible_truncation)]
-        let pct = ((used / CONTEXT_WINDOW) * 100.0) as f32;
+        let pct = ((used / context_window_f64) * 100.0) as f32;
         self.last_percentage = pct;
         true
     }
@@ -367,6 +369,7 @@ async fn process_stream(
     context_pct: &AtomicU32,
     worktree_path: &Path,
     task_prefix: Option<TaskId>,
+    model: Model,
 ) -> anyhow::Result<StreamData> {
     let mut cc_session_id: Option<String> = None;
     let mut model_id: Option<String> = None;
@@ -376,7 +379,7 @@ async fn process_stream(
     let mut interrupted = false;
     let mut printer = StreamPrinter::new(worktree_path);
     printer.set_task_prefix(task_prefix);
-    let mut context_tracker = ContextTracker::new();
+    let mut context_tracker = ContextTracker::new(model);
 
     let mut stream = client.receive_response();
     while let Some(result) = stream.next().await {
@@ -558,7 +561,7 @@ pub async fn execute_step(
         None
     };
     let mut data =
-        process_stream(&mut client, &stop, &context_pct, worktree_path, task_prefix).await?;
+        process_stream(&mut client, &stop, &context_pct, worktree_path, task_prefix, task.model).await?;
     // Best-effort disconnect — session data already captured
     if let Err(e) = client.disconnect().await {
         eprintln!("warning: failed to disconnect Claude client: {e}");
@@ -667,7 +670,7 @@ mod tests {
 
     #[test]
     fn context_tracker_percentage_calculation() {
-        let mut tracker = ContextTracker::new();
+        let mut tracker = ContextTracker::new(Model::Sonnet);
 
         // Build usage JSON matching the scenario from the task:
         // input=10k, cache_read=50k, cache_create=5k, output=2k
