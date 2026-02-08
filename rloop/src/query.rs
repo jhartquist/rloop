@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::log::Event;
 use crate::model::Model;
-use crate::tool::BuiltinTool;
+use crate::builtin_tool::BuiltinTool;
 
 /// Configuration for a lightweight LLM query.
 pub struct QueryConfig {
@@ -37,7 +37,7 @@ pub struct QueryResult {
 /// Compute allowed/disallowed tool lists from the requested tools.
 fn compute_tool_lists(tools: &[BuiltinTool]) -> (Vec<String>, Vec<String>) {
     let allowed: HashSet<BuiltinTool> = tools.iter().copied().collect();
-    let disallowed = crate::tool::compute_disallowed_builtins(&allowed);
+    let disallowed = crate::builtin_tool::compute_disallowed_builtins(&allowed);
 
     let allowed: Vec<String> = allowed.iter().map(ToString::to_string).collect();
     let disallowed: Vec<String> = disallowed.iter().map(ToString::to_string).collect();

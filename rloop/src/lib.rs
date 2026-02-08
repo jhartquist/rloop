@@ -13,5 +13,5 @@ pub mod task;
 pub mod template;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-pub mod tool;
+pub mod builtin_tool;
 pub(crate) mod tools;

@@ -8,7 +8,7 @@ use crate::log::{Event, EventSender};
 use crate::model::Model;
 use crate::query::{QueryConfig, run_query};
 use crate::task::{Task, TaskId};
-use crate::tool::BuiltinTool;
+use crate::builtin_tool::BuiltinTool;
 
 /// Attempt to resolve merge conflicts using a lightweight LLM agent.
 ///

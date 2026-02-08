@@ -562,9 +562,9 @@ async fn cmd_task_new(
         model: enhance_model,
         cwd: repo.to_path_buf(),
         tools: vec![
-            rloop::tool::BuiltinTool::Read,
-            rloop::tool::BuiltinTool::Glob,
-            rloop::tool::BuiltinTool::Grep,
+            rloop::builtin_tool::BuiltinTool::Read,
+            rloop::builtin_tool::BuiltinTool::Glob,
+            rloop::builtin_tool::BuiltinTool::Grep,
         ],
         output_format: Some(enhanced_tasks_schema()),
     };

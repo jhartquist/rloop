@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::log::{Event, StreamPrinter};
 use crate::model::Model;
 use crate::task::{Task, TaskId};
-use crate::tool::BuiltinTool;
+use crate::builtin_tool::BuiltinTool;
 use crate::tools::create_tools;
 
 /// Outcome of a single step (one execution attempt of a task).
@@ -161,7 +161,7 @@ fn compute_tool_lists() -> (Vec<String>, Vec<String>) {
     .into_iter()
     .collect();
 
-    let disallowed_builtins = crate::tool::compute_disallowed_builtins(&allowed_builtins);
+    let disallowed_builtins = crate::builtin_tool::compute_disallowed_builtins(&allowed_builtins);
 
     let mut allowed: Vec<String> = allowed_builtins.iter().map(ToString::to_string).collect();
     allowed.push("mcp__rloop__complete".to_string());
