@@ -1,7 +1,7 @@
 [step]
 model = "Opus"
 max_turns = 50
-max_retries = 10
+max_retries = 5
 
 [session]
-max_parallel = 3
+max_parallel = 1
