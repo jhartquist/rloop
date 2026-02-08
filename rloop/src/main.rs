@@ -680,7 +680,7 @@ fn cmd_task_show(id: u32) -> anyhow::Result<()> {
     }
 
     if let Some(ref cmds) = task.verification {
-        println!("Verify:     {}", cmds.0.join("; "));
+        println!("Verify:     {}", cmds);
     } else {
         println!("Verify:     (none)");
     }

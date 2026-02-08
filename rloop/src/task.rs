@@ -28,7 +28,29 @@ impl FromStr for TaskId {
 
 /// Ordered list of shell commands to verify a task's output.
 #[derive(Clone, Debug, Deserialize)]
-pub struct VerificationCommands(pub Vec<String>);
+pub struct VerificationCommands(Vec<String>);
+
+impl VerificationCommands {
+    /// Create a new `VerificationCommands` from a vector of strings.
+    #[must_use]
+    pub fn new(commands: Vec<String>) -> Self {
+        Self(commands)
+    }
+}
+
+impl std::ops::Deref for VerificationCommands {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VerificationCommands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.join("; "))
+    }
+}
 
 /// A task loaded from a markdown file with YAML frontmatter.
 #[derive(Clone, Debug)]
@@ -427,7 +449,7 @@ Do the thing.
         assert_eq!(task.id, TaskId(3));
         assert_eq!(task.model, Model::Opus);
         assert_eq!(task.depends_on, vec![TaskId(1), TaskId(2)]);
-        assert_eq!(task.verification.as_ref().unwrap().0.len(), 2);
+        assert_eq!(task.verification.as_ref().unwrap().len(), 2);
         assert!(task.completed);
         assert!(task.description.contains("# Implement feature"));
     }
@@ -487,8 +509,8 @@ Do the thing.
         let path = write_task_file(dir.path(), "00.md", content);
         let task = load_task(&path).unwrap();
         let cmds = task.verification.unwrap();
-        assert_eq!(cmds.0.len(), 1);
-        assert_eq!(cmds.0[0], "cargo test");
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "cargo test");
     }
 
     #[test]
@@ -498,7 +520,7 @@ Do the thing.
         let path = write_task_file(dir.path(), "00.md", content);
         let task = load_task(&path).unwrap();
         let cmds = task.verification.unwrap();
-        assert_eq!(cmds.0.len(), 2);
+        assert_eq!(cmds.len(), 2);
     }
 
     #[test]

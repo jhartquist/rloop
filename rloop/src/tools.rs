@@ -201,7 +201,7 @@ fn build_complete_tool(
 
                 // Run verification if configured
                 if let Some(ref v) = cmds
-                    && let Err(msg) = run_verification(&v.0, &dir, cmd_timeout)
+                    && let Err(msg) = run_verification(v, &dir, cmd_timeout)
                 {
                     return Ok(tool_err(msg));
                 }
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn create_tools_with_verification() {
         let dir = tempfile::tempdir().unwrap();
-        let cmds = VerificationCommands(vec!["cargo test".into()]);
+        let cmds = VerificationCommands::new(vec!["cargo test".into()]);
         let _server = create_tools(Some(&cmds), dir.path(), 300);
     }
 

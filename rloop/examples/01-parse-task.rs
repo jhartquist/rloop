@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     println!("  Depends on:   {:?}", task.depends_on);
     println!(
         "  Verification: {:?}",
-        task.verification.as_ref().map(|v| &v.0)
+        task.verification.as_ref().map(|v| v.as_ref())
     );
     println!("  Completed:    {}", task.completed);
     println!("  Description:");
