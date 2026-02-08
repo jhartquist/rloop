@@ -265,13 +265,27 @@ fn cleanup_worktrees(repo: &std::path::Path) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        // Parse task id from directory name
-        let Ok(task_id) = name.parse::<rloop::task::TaskId>() else {
-            continue;
+
+        // Parse directory name to determine worktree type and construct branch name
+        let (task_id, branch) = if let Some(id_str) = name.strip_suffix("-mergefix") {
+            // Merge-fix worktree: {id}-mergefix -> rloop-mergefix-{id}
+            let Ok(task_id) = id_str.parse::<rloop::task::TaskId>() else {
+                eprintln!("warning: skipping invalid merge-fix worktree directory: {name}");
+                continue;
+            };
+            (task_id, format!("rloop-mergefix-{id_str}"))
+        } else {
+            // Regular worktree: {id} -> rloop-wt-{id}
+            let Ok(task_id) = name.parse::<rloop::task::TaskId>() else {
+                eprintln!("warning: skipping unrecognized worktree directory: {name}");
+                continue;
+            };
+            (task_id, format!("rloop-wt-{name}"))
         };
+
         let wt = rloop::git::Worktree {
             path: path.clone(),
-            branch: format!("rloop-wt-{name}"),
+            branch,
             task_id,
         };
         if let Err(e) = rloop::git::cleanup_worktree(repo, &wt) {

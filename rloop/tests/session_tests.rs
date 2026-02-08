@@ -1600,6 +1600,83 @@ async fn cleanup_scan_finds_parallel_worktrees() {
     }
 }
 
+// --- Cleanup handles merge-fix worktrees ---
+
+#[tokio::test]
+async fn cleanup_handles_mergefix_worktrees() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = helpers::init_git_repo(dir.path());
+    let worktrees_dir = repo.join(".rloop").join("worktrees");
+    std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+    // Create session branch
+    rloop::git::git(&repo, &["branch", "rloop-test"]).unwrap();
+
+    // Create a regular worktree
+    let wt0 = rloop::git::create_worktree(&repo, TaskId(0), "rloop-test").unwrap();
+
+    // Create a merge-fix worktree manually (simulating what merge.rs does)
+    let mergefix_dir = worktrees_dir.join("01-mergefix");
+    let mergefix_branch = "rloop-mergefix-01";
+    rloop::git::git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            mergefix_dir.to_str().unwrap(),
+            "-b",
+            mergefix_branch,
+            "rloop-test",
+        ],
+    )
+    .unwrap();
+
+    // Verify both exist
+    assert!(wt0.path.exists());
+    assert!(mergefix_dir.exists());
+
+    // Verify branches exist
+    let branches = rloop::git::git(&repo, &["branch"]).unwrap();
+    assert!(branches.contains("rloop-wt-00"));
+    assert!(branches.contains(mergefix_branch));
+
+    // Run cleanup logic (same as main.rs cleanup_worktrees)
+    let entries: Vec<_> = std::fs::read_dir(&worktrees_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .collect();
+
+    for entry in entries {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+
+        let (task_id, branch) = if let Some(id_str) = name.strip_suffix("-mergefix") {
+            let id: u32 = id_str.parse().unwrap();
+            (TaskId(id), format!("rloop-mergefix-{id_str}"))
+        } else {
+            let id: u32 = name.parse().unwrap();
+            (TaskId(id), format!("rloop-wt-{name}"))
+        };
+
+        let wt = rloop::git::Worktree {
+            path: path.clone(),
+            branch,
+            task_id,
+        };
+        rloop::git::cleanup_worktree(&repo, &wt).unwrap();
+    }
+
+    // Verify both worktrees are removed
+    assert!(!wt0.path.exists());
+    assert!(!mergefix_dir.exists());
+
+    // Verify both branches are deleted
+    let branches = rloop::git::git(&repo, &["branch"]).unwrap();
+    assert!(!branches.contains("rloop-wt-00"));
+    assert!(!branches.contains("rloop-mergefix-01"));
+}
+
 // --- Non-conflicting parallel writes with different files merge cleanly ---
 
 #[tokio::test]
