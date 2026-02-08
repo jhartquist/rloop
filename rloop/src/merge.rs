@@ -2,7 +2,6 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::config::Config;
 use crate::git;
 use crate::log::{Event, EventSender};
 use crate::model::Model;
@@ -169,14 +168,12 @@ If you cannot resolve the conflicts cleanly, explain why in your response.",
 /// # Errors
 /// Returns an error if the merge cannot be completed (either rebase fails
 /// and the merge-fix agent cannot resolve, or infrastructure errors occur).
-#[allow(clippy::too_many_arguments)]
 pub async fn merge_with_fix(
     repo: &Path,
     task: &Task,
     task_branch: &str,
     session_branch: &str,
     parent_branch: &str,
-    _config: &Config,
     logger: &EventSender,
 ) -> anyhow::Result<()> {
     let task_id = task.id;

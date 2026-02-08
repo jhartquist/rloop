@@ -270,7 +270,6 @@ async fn execute_dag<E: StepExecutor>(
                     &result.worktree.branch,
                     session_branch,
                     parent_branch,
-                    config,
                     logger,
                 )
                 .await;
