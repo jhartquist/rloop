@@ -30,7 +30,8 @@ fn main() -> anyhow::Result<()> {
     // Resolve for target task 3
     println!("=== DAG for task 03 ===");
     let plan = resolve_dag(&tasks, TaskId(3))?;
-    println!("  Target: {}", plan.target);
+    let target_str = plan.target.map_or("all".to_string(), |id| format!("{id}"));
+    println!("  Target: {target_str}");
     print!("  Execution order:");
     for step in &plan.steps {
         print!(" {step}");

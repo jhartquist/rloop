@@ -783,12 +783,14 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         } => {
             println!("{elapsed}  {} Session {session_id}", "▶".green());
             println!("          Date:   {datetime}");
-            println!("          Target: task {target:02}");
+            let target_str = target.map_or("all".to_string(), |id| format!("{id:02}"));
+            println!("          Target: task {target_str}");
             println!("          Branch: {parent_branch} → {session_branch}");
         }
         Event::SessionStarted { session_id, target } => {
             println!("{elapsed}  {} Session {session_id}", "▶".green());
-            println!("          Target: task {target:02}");
+            let target_str = target.map_or("all".to_string(), |id| format!("{id:02}"));
+            println!("          Target: task {target_str}");
         }
         Event::StepStarted {
             task_id,

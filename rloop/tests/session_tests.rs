@@ -574,7 +574,7 @@ async fn session_log_contains_metric_events() {
     {
         assert_eq!(session_id, &result.session_id);
         assert!(!datetime.is_empty(), "datetime should be non-empty");
-        assert_eq!(*target, TaskId(1));
+        assert_eq!(*target, Some(TaskId(1)));
         assert_eq!(parent_branch, "main");
         assert!(session_branch.contains("rloop-"));
     } else {

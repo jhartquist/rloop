@@ -38,7 +38,8 @@ pub struct Task {
 
 /// Ordered execution plan from DAG resolution.
 pub struct ExecutionPlan {
-    pub target: TaskId,
+    /// The target task, or None if this is an --all session
+    pub target: Option<TaskId>,
     pub steps: Vec<TaskId>,
 }
 
@@ -227,7 +228,7 @@ pub fn resolve_dag(tasks: &[Task], target: TaskId) -> anyhow::Result<ExecutionPl
     dfs(target, &task_map, &mut colors, &mut order)?;
 
     Ok(ExecutionPlan {
-        target,
+        target: Some(target),
         steps: order,
     })
 }
@@ -259,7 +260,7 @@ pub fn resolve_all_dag(tasks: &[Task]) -> anyhow::Result<ExecutionPlan> {
         .collect();
 
     Ok(ExecutionPlan {
-        target: TaskId(u32::MAX), // sentinel for "all tasks"
+        target: None,
         steps,
     })
 }
@@ -525,7 +526,7 @@ Do the thing.
     fn dag_single_no_deps() {
         let tasks = vec![make_task(0, &[])];
         let plan = resolve_dag(&tasks, TaskId(0)).unwrap();
-        assert_eq!(plan.target, TaskId(0));
+        assert_eq!(plan.target, Some(TaskId(0)));
         assert_eq!(plan.steps, vec![TaskId(0)]);
     }
 

@@ -556,7 +556,7 @@ pub async fn run_session_with<E: StepExecutor>(
         &logger,
         Event::SessionStarted {
             session_id: session_id.clone(),
-            target: target_task,
+            target: Some(target_task),
         },
     );
 
@@ -568,7 +568,7 @@ pub async fn run_session_with<E: StepExecutor>(
         Event::SessionBanner {
             session_id: session_id.clone(),
             datetime,
-            target: target_task,
+            target: Some(target_task),
             parent_branch: parent_branch.clone(),
             session_branch: session_branch.clone(),
         },
@@ -665,9 +665,6 @@ pub async fn run_all_session_with<E: StepExecutor>(
     let session_logger = SessionLogger::new(&session_dir, session_id.clone())?;
     let (logger, logger_handle) = spawn_logger(session_logger);
 
-    // Use TaskId(u32::MAX) as sentinel for "all tasks"
-    let all_target = TaskId(u32::MAX);
-
     let parent_branch = git::current_branch(repo).context("failed to determine current branch")?;
 
     // Load tasks and resolve full DAG
@@ -683,7 +680,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         &logger,
         Event::SessionStarted {
             session_id: session_id.clone(),
-            target: all_target,
+            target: None,
         },
     );
 
@@ -695,7 +692,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
         Event::SessionBanner {
             session_id: session_id.clone(),
             datetime,
-            target: all_target,
+            target: None,
             parent_branch: parent_branch.clone(),
             session_branch: session_branch.clone(),
         },

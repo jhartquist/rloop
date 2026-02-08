@@ -17,7 +17,7 @@ pub enum Event {
     // rloop lifecycle
     SessionStarted {
         session_id: SessionId,
-        target: TaskId,
+        target: Option<TaskId>,
     },
     TaskStarted {
         task_id: TaskId,
@@ -82,7 +82,7 @@ pub enum Event {
     SessionBanner {
         session_id: SessionId,
         datetime: String,
-        target: TaskId,
+        target: Option<TaskId>,
         parent_branch: String,
         session_branch: String,
     },
@@ -233,11 +233,12 @@ impl SessionLogger {
         let elapsed = format_elapsed(self.start_time.elapsed());
         match event {
             Event::SessionStarted { session_id, target } => {
+                let target_str = target.map_or("all".to_string(), |id| format!("{id:02}"));
                 eprintln!(
                     "{elapsed}  {} session {} targeting task {}",
                     "▶".green(),
                     session_id,
-                    target
+                    target_str
                 );
             }
             Event::SessionBanner {
@@ -249,7 +250,8 @@ impl SessionLogger {
             } => {
                 eprintln!("{elapsed}  {} Session {session_id}", "▶".green());
                 eprintln!("           Date:   {datetime}");
-                eprintln!("           Target: task {target:02}");
+                let target_str = target.map_or("all".to_string(), |id| format!("{id:02}"));
+                eprintln!("           Target: task {target_str}");
                 eprintln!("           Branch: {parent_branch} → {session_branch}");
             }
             Event::StepStarted {
@@ -815,7 +817,7 @@ mod tests {
     fn serialize_session_started() {
         let event = Event::SessionStarted {
             session_id: SessionId("abc-123".into()),
-            target: TaskId(5),
+            target: Some(TaskId(5)),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"SessionStarted"#));
@@ -837,12 +839,12 @@ mod tests {
         vec![
             Event::SessionStarted {
                 session_id: SessionId("s1".into()),
-                target: TaskId(0),
+                target: Some(TaskId(0)),
             },
             Event::SessionBanner {
                 session_id: SessionId("20250206-143022".into()),
                 datetime: "2025-02-06 14:30:22 PST".into(),
-                target: TaskId(5),
+                target: Some(TaskId(5)),
                 parent_branch: "main".into(),
                 session_branch: "rloop-05".into(),
             },
@@ -1438,7 +1440,7 @@ mod tests {
         let event = Event::SessionBanner {
             session_id: SessionId("20250206-143022".into()),
             datetime: "2025-02-06 14:30:22 PST".into(),
-            target: TaskId(5),
+            target: Some(TaskId(5)),
             parent_branch: "main".into(),
             session_branch: "rloop-05".into(),
         };
@@ -1453,7 +1455,7 @@ mod tests {
         let event = Event::SessionBanner {
             session_id: SessionId("20250206-143022".into()),
             datetime: "2025-02-06 14:30:22 PST".into(),
-            target: TaskId(5),
+            target: Some(TaskId(5)),
             parent_branch: "main".into(),
             session_branch: "rloop-05".into(),
         };
@@ -1501,7 +1503,7 @@ mod tests {
         let banner = Event::SessionBanner {
             session_id: SessionId("test".into()),
             datetime: "2025-02-06 14:30:22 PST".into(),
-            target: TaskId(5),
+            target: Some(TaskId(5)),
             parent_branch: "main".into(),
             session_branch: "rloop-05".into(),
         };
