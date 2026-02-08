@@ -722,10 +722,11 @@ impl StreamPrinter {
 
     /// Set the task prefix for parallel mode.
     ///
-    /// When `max_parallel > 1`, pass `Some(task_id)` to prefix output lines.
+    /// When `max_parallel > 1`, pass `Some((task_id, attempt))` to prefix output lines.
     /// When `max_parallel == 1`, pass `None` to avoid noise.
-    pub(crate) fn set_task_prefix(&mut self, task_id: Option<crate::task::TaskId>) {
-        self.task_prefix = task_id.map_or_else(String::new, |id| format!("[task {id:02}] "));
+    pub(crate) fn set_task_prefix(&mut self, task: Option<(crate::task::TaskId, u32)>) {
+        self.task_prefix =
+            task.map_or_else(String::new, |(id, attempt)| format!("[task {id:02}-{attempt}] "));
     }
 
     /// Register a tool call so its result can be correlated later.

@@ -74,6 +74,7 @@ pub trait StepExecutor: Send + Sync {
         worktree_path: &Path,
         config: &Config,
         prior_learnings: &[String],
+        attempt: u32,
     ) -> impl Future<Output = anyhow::Result<StepResult>> + Send;
 }
 
@@ -85,9 +86,10 @@ impl<E: StepExecutor> StepExecutor for std::sync::Arc<E> {
         worktree_path: &Path,
         config: &Config,
         prior_learnings: &[String],
+        attempt: u32,
     ) -> anyhow::Result<StepResult> {
         (**self)
-            .execute(task, worktree_path, config, prior_learnings)
+            .execute(task, worktree_path, config, prior_learnings, attempt)
             .await
     }
 }
@@ -102,8 +104,9 @@ impl StepExecutor for RealStepExecutor {
         worktree_path: &Path,
         config: &Config,
         prior_learnings: &[String],
+        attempt: u32,
     ) -> anyhow::Result<StepResult> {
-        execute_step(task, worktree_path, config, prior_learnings).await
+        execute_step(task, worktree_path, config, prior_learnings, attempt).await
     }
 }
 
@@ -380,7 +383,7 @@ async fn process_stream(
     stop: &std::sync::atomic::AtomicBool,
     context_pct: &AtomicU32,
     worktree_path: &Path,
-    task_prefix: Option<TaskId>,
+    task_prefix: Option<(TaskId, u32)>,
     model: Model,
 ) -> anyhow::Result<StreamData> {
     let mut cc_session_id: Option<String> = None;
@@ -516,6 +519,7 @@ pub async fn execute_step(
     worktree_path: impl AsRef<Path>,
     config: &Config,
     prior_learnings: &[String],
+    attempt: u32,
 ) -> anyhow::Result<StepResult> {
     let worktree_path = worktree_path.as_ref();
     let start = Instant::now();
@@ -568,7 +572,7 @@ pub async fn execute_step(
 
     // 7. Stream and collect events
     let task_prefix = if config.max_parallel > 1 {
-        Some(task.id)
+        Some((task.id, attempt))
     } else {
         None
     };

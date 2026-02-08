@@ -41,10 +41,11 @@ impl<E: StepExecutor> StepExecutor for RecordingExecutor<E> {
         worktree_path: &Path,
         config: &Config,
         prior_learnings: &[String],
+        attempt: u32,
     ) -> anyhow::Result<StepResult> {
         let result = self
             .inner
-            .execute(task, worktree_path, config, prior_learnings)
+            .execute(task, worktree_path, config, prior_learnings, attempt)
             .await?;
         self.results
             .lock()
@@ -83,6 +84,7 @@ impl StepExecutor for PlaybackExecutor {
         _worktree_path: &Path,
         _config: &Config,
         _prior_learnings: &[String],
+        _attempt: u32,
     ) -> anyhow::Result<StepResult> {
         self.results
             .lock()
@@ -155,16 +157,16 @@ mod tests {
         let config = Config::default();
 
         let r0 = rt
-            .block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[]))
+            .block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[], 1))
             .unwrap();
         assert_eq!(r0.task_id, TaskId(0));
 
         let r1 = rt
-            .block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[]))
+            .block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[], 1))
             .unwrap();
         assert_eq!(r1.task_id, TaskId(1));
 
-        let r2 = rt.block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[]));
+        let r2 = rt.block_on(executor.execute(&dummy_task, Path::new("/tmp"), &config, &[], 1));
         assert!(r2.is_err());
     }
 
@@ -204,7 +206,7 @@ mod tests {
                 };
                 let config = Config::default();
                 if let Ok(result) =
-                    rt.block_on(ex.execute(&dummy_task, Path::new("/tmp"), &config, &[]))
+                    rt.block_on(ex.execute(&dummy_task, Path::new("/tmp"), &config, &[], 1))
                 {
                     ids.lock().unwrap().push(result.task_id);
                 }

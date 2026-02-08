@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Execute step
     println!("Running step...");
-    let result = execute_step(&task, &worktree.path, &config, &[]).await?;
+    let result = execute_step(&task, &worktree.path, &config, &[], 1).await?;
 
     match &result.outcome {
         StepOutcome::Success { summary } => println!("Success: {summary}"),

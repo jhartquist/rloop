@@ -542,7 +542,7 @@ async fn run_with_retries<E: StepExecutor>(
         emit(logger, Event::PromptSent { task_id });
 
         let step_result = executor
-            .execute(task, &worktree.path, config, &prior_learnings)
+            .execute(task, &worktree.path, config, &prior_learnings, attempts)
             .await?;
 
         // Emit step start info (model_id and cc_session_id come from the SDK System message)

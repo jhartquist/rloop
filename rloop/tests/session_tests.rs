@@ -47,6 +47,7 @@ impl StepExecutor for MockExecutor {
         _worktree_path: &std::path::Path,
         _config: &Config,
         _prior_learnings: &[String],
+        _attempt: u32,
     ) -> anyhow::Result<StepResult> {
         let outcome = if self.fail_tasks.contains(&task.id) {
             StepOutcome::Failed {
@@ -761,6 +762,7 @@ impl StepExecutor for ConcurrencyTrackingExecutor {
         _worktree_path: &std::path::Path,
         _config: &Config,
         _prior_learnings: &[String],
+        _attempt: u32,
     ) -> anyhow::Result<StepResult> {
         let prev = self.current.fetch_add(1, Ordering::SeqCst);
         let concurrent = prev + 1;
@@ -835,6 +837,7 @@ impl StepExecutor for FileWritingMockExecutor {
         worktree_path: &std::path::Path,
         _config: &Config,
         _prior_learnings: &[String],
+        _attempt: u32,
     ) -> anyhow::Result<StepResult> {
         // Write configured files to the worktree
         if let Some(writes) = self.file_writes.get(&task.id) {
@@ -1880,6 +1883,7 @@ impl StepExecutor for ErrorExecutor {
         _worktree_path: &std::path::Path,
         _config: &Config,
         _prior_learnings: &[String],
+        _attempt: u32,
     ) -> anyhow::Result<StepResult> {
         if self.error_tasks.contains(&task.id) {
             anyhow::bail!("simulated system error for task {}", task.id.0);
