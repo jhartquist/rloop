@@ -200,7 +200,11 @@ async fn execute_dag<E: StepExecutor>(
         }
 
         // Await the next completion
-        let result = match futures.next().await.expect("futures should not be empty") {
+        let result = match futures
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("internal error: futures empty in DAG loop"))?
+        {
             Ok(r) => r,
             Err(e) => {
                 // Error occurred — drain all in-flight futures and clean up their worktrees
@@ -410,8 +414,10 @@ impl WorktreeCleanupGuard {
     }
 
     /// Disarm the guard so the worktree won't be cleaned up on drop.
-    fn disarm(&mut self) -> Worktree {
-        self.worktree.take().expect("guard already disarmed")
+    fn disarm(&mut self) -> anyhow::Result<Worktree> {
+        self.worktree
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("internal error: cleanup guard already disarmed"))
     }
 }
 
@@ -495,11 +501,11 @@ async fn execute_task_in_worktree<E: StepExecutor>(
 
         emit(logger, Event::TaskCompleted { task_id, summary });
         // Disarm guard — caller will handle cleanup
-        let worktree = cleanup_guard.disarm();
+        let worktree = cleanup_guard.disarm()?;
         Ok((worktree, TaskOutcome::Success(task_metrics)))
     } else {
         // Disarm guard — caller will handle cleanup
-        let worktree = cleanup_guard.disarm();
+        let worktree = cleanup_guard.disarm()?;
         Ok((worktree, TaskOutcome::Failed(task_metrics)))
     }
 }

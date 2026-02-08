@@ -207,10 +207,14 @@ fn build_complete_tool(
                 }
 
                 // Verification passed (or none configured) -- accept completion
-                *summary_ref.lock().expect("summary lock poisoned") = Some(text);
-                stop_ref.store(true, Ordering::SeqCst);
-
-                Ok(tool_ok("Task complete."))
+                match summary_ref.lock() {
+                    Ok(mut guard) => {
+                        *guard = Some(text);
+                        stop_ref.store(true, Ordering::SeqCst);
+                        Ok(tool_ok("Task complete."))
+                    }
+                    Err(_) => Ok(tool_err("Internal error: summary lock poisoned")),
+                }
             }
         }
     )

@@ -23,11 +23,11 @@ impl<E: StepExecutor> RecordingExecutor<E> {
     ///
     /// # Errors
     /// Returns an error if serialization or file writing fails.
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned.
     pub fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let results = self.results.lock().expect("results lock poisoned");
+        let results = self
+            .results
+            .lock()
+            .map_err(|_| anyhow::anyhow!("internal error: results lock poisoned"))?;
         let json = serde_json::to_string_pretty(&*results)?;
         std::fs::write(path.as_ref(), json)?;
         Ok(())
@@ -48,7 +48,7 @@ impl<E: StepExecutor> StepExecutor for RecordingExecutor<E> {
             .await?;
         self.results
             .lock()
-            .expect("results lock poisoned")
+            .map_err(|_| anyhow::anyhow!("internal error: results lock poisoned"))?
             .push(result.clone());
         Ok(result)
     }
@@ -86,7 +86,7 @@ impl StepExecutor for PlaybackExecutor {
     ) -> anyhow::Result<StepResult> {
         self.results
             .lock()
-            .expect("results lock poisoned")
+            .map_err(|_| anyhow::anyhow!("internal error: results lock poisoned"))?
             .pop()
             .ok_or_else(|| anyhow::anyhow!("playback exhausted: no more recorded results"))
     }

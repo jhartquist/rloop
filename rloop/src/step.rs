@@ -202,10 +202,20 @@ fn failure_output_schema() -> serde_json::Value {
 /// or from structured output on the `ResultMessage`.
 fn determine_outcome(summary: &Mutex<Option<String>>, result_msg: Option<&Message>) -> StepOutcome {
     // Check if the `complete` tool was called and verification passed.
-    if let Some(text) = summary.lock().expect("summary lock poisoned").as_ref() {
-        return StepOutcome::Success {
-            summary: text.clone(),
-        };
+    match summary.lock() {
+        Ok(guard) => {
+            if let Some(text) = guard.as_ref() {
+                return StepOutcome::Success {
+                    summary: text.clone(),
+                };
+            }
+        }
+        Err(_) => {
+            return StepOutcome::Failed {
+                reason: "internal error: summary lock poisoned".to_string(),
+                learnings: String::new(),
+            };
+        }
     }
 
     // Fall back to structured output from the Result message.
