@@ -2,3 +2,6 @@
 model = "Opus"
 max_turns = 50
 max_retries = 10
+
+[session]
+max_parallel = 3
