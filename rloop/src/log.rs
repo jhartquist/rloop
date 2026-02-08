@@ -5,11 +5,23 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context as _;
+use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::session::SessionId;
 use crate::task::TaskId;
+
+/// A log entry with timestamp envelope wrapping an event.
+///
+/// All events are serialized wrapped in this envelope to preserve temporal order
+/// and enable duration analysis. The JSONL format is: `{"timestamp": "...", "event": {...}}`
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    #[serde(flatten)]
+    pub event: Event,
+}
 
 /// All events that can occur during a session.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -224,7 +236,11 @@ impl SessionLogger {
     /// # Errors
     /// Returns an error if JSON serialization or file writing fails.
     pub fn log(&mut self, event: &Event) -> anyhow::Result<()> {
-        let line = serde_json::to_string(event)?;
+        let entry = LogEntry {
+            timestamp: Utc::now(),
+            event: event.clone(),
+        };
+        let line = serde_json::to_string(&entry)?;
         writeln!(self.writer, "{line}")?;
         self.writer.flush()?;
         Ok(())
@@ -474,8 +490,9 @@ pub fn spawn_logger(logger: SessionLogger) -> (EventSender, tokio::task::JoinHan
 
 /// Load events from a JSONL session log file.
 ///
-/// Each line is parsed as a JSON-encoded `Event`. Lines that fail to parse
-/// are skipped with a warning logged to stderr (including line number and content).
+/// Each line is parsed as a JSON-encoded `LogEntry` (with timestamp envelope).
+/// Falls back to parsing as bare `Event` for backward compatibility with old logs.
+/// Lines that fail to parse both formats are skipped with a warning.
 ///
 /// # Errors
 /// Returns an error if the file cannot be opened or read.
@@ -502,18 +519,88 @@ pub fn load_events(path: impl AsRef<Path>) -> anyhow::Result<Vec<Event>> {
             continue;
         }
 
-        match serde_json::from_str::<Event>(&line) {
-            Ok(event) => events.push(event),
-            Err(e) => {
-                eprintln!(
-                    "warning: skipping corrupt line {line_number} in {}: {e} — content: {line}",
-                    path.display()
-                );
+        // Try new envelope format first
+        match serde_json::from_str::<LogEntry>(&line) {
+            Ok(entry) => events.push(entry.event),
+            Err(_) => {
+                // Fall back to old bare Event format
+                match serde_json::from_str::<Event>(&line) {
+                    Ok(event) => events.push(event),
+                    Err(e) => {
+                        eprintln!(
+                            "warning: skipping corrupt line {line_number} in {}: {e} — content: {line}",
+                            path.display()
+                        );
+                    }
+                }
             }
         }
     }
 
     Ok(events)
+}
+
+/// Load events with timestamps from a JSONL session log file.
+///
+/// Returns `LogEntry` structs that include both the timestamp and the event.
+/// For backward compatibility with old logs that lack timestamps, assigns synthetic
+/// timestamps starting from Unix epoch with 1-second increments.
+///
+/// # Errors
+/// Returns an error if the file cannot be opened or read.
+pub fn load_events_with_timestamps(path: impl AsRef<Path>) -> anyhow::Result<Vec<LogEntry>> {
+    let path = path.as_ref();
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    let mut line_count = 0u64;
+
+    for (line_number, line_result) in reader.lines().enumerate() {
+        let line_number = line_number + 1; // 1-based
+        let line = match line_result {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read line {line_number} in {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Try new envelope format first
+        match serde_json::from_str::<LogEntry>(&line) {
+            Ok(entry) => entries.push(entry),
+            Err(_) => {
+                // Fall back to old bare Event format with synthetic timestamp
+                match serde_json::from_str::<Event>(&line) {
+                    Ok(event) => {
+                        // Use Unix epoch + line count as synthetic timestamp
+                        #[allow(clippy::cast_possible_wrap)]
+                        let synthetic_ts = DateTime::<Utc>::from_timestamp(line_count as i64, 0)
+                            .unwrap_or_else(Utc::now);
+                        entries.push(LogEntry {
+                            timestamp: synthetic_ts,
+                            event,
+                        });
+                        line_count += 1;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warning: skipping corrupt line {line_number} in {}: {e} — content: {line}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Write data to a file, creating a `.bak` backup of any existing file first.
@@ -1670,5 +1757,90 @@ mod tests {
         // Sending after receiver is dropped should not panic
         sender.send(Event::SessionCancelled);
         sender.send(Event::SessionCancelled);
+    }
+
+    // --- Timestamp tests ---
+
+    #[test]
+    fn log_entry_contains_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("timestamp-test".into());
+        let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
+
+        logger
+            .log(&Event::TaskStarted { task_id: TaskId(0) })
+            .unwrap();
+
+        let path = dir.path().join("timestamp-test.jsonl");
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Verify the JSON contains a timestamp field
+        assert!(content.contains(r#""timestamp":"#));
+    }
+
+    #[test]
+    fn load_events_with_timestamps_returns_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("ts-entries".into());
+        let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
+
+        logger
+            .log(&Event::TaskStarted { task_id: TaskId(1) })
+            .unwrap();
+        logger
+            .log(&Event::TaskCompleted {
+                task_id: TaskId(1),
+                summary: "done".into(),
+            })
+            .unwrap();
+
+        let path = dir.path().join("ts-entries.jsonl");
+        let entries = load_events_with_timestamps(&path).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].timestamp <= entries[1].timestamp);
+    }
+
+    #[test]
+    fn load_events_with_timestamps_backward_compatible() {
+        // Test that old logs without timestamps can still be loaded
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old-format.jsonl");
+
+        // Write old-format JSONL (bare events, no timestamp envelope)
+        let event = Event::TaskStarted { task_id: TaskId(0) };
+        let line = serde_json::to_string(&event).unwrap();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let entries = load_events_with_timestamps(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        // Synthetic timestamp should be Unix epoch
+        assert_eq!(
+            entries[0].timestamp,
+            chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn timestamps_increase_monotonically() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId("monotonic".into());
+        let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
+
+        for i in 0..10 {
+            logger
+                .log(&Event::TaskStarted { task_id: TaskId(i) })
+                .unwrap();
+        }
+
+        let path = dir.path().join("monotonic.jsonl");
+        let entries = load_events_with_timestamps(&path).unwrap();
+
+        for i in 1..entries.len() {
+            assert!(
+                entries[i].timestamp >= entries[i - 1].timestamp,
+                "timestamp should be monotonically increasing"
+            );
+        }
     }
 }

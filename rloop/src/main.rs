@@ -740,9 +740,9 @@ fn cmd_session_show(session_id: &str) -> anyhow::Result<()> {
         anyhow::bail!("Session {session_id} not found");
     }
 
-    let events = rloop::log::load_events(&session_path)?;
+    let entries = rloop::log::load_events_with_timestamps(&session_path)?;
 
-    if events.is_empty() {
+    if entries.is_empty() {
         eprintln!("Session log is empty");
         return Ok(());
     }
@@ -750,26 +750,22 @@ fn cmd_session_show(session_id: &str) -> anyhow::Result<()> {
     // Print session header
     println!("Session {session_id}\n");
 
-    // Track elapsed time from event sequence (no actual timestamps in events)
-    // We'll use event index as a proxy for time progression
-    let total_events = events.len();
+    // Use first event timestamp as session start time
+    let start_time = entries[0].timestamp;
 
-    for (idx, event) in events.iter().enumerate() {
-        // Format elapsed time based on event index
-        // This is a simplified approach - in reality we'd need actual timestamps
-        let elapsed = format_elapsed_time(idx, total_events);
-        print_event_with_elapsed(&elapsed, event);
+    for entry in &entries {
+        // Calculate elapsed time from session start
+        let elapsed = entry.timestamp.signed_duration_since(start_time);
+        let elapsed_str = format_elapsed_from_duration(elapsed);
+        print_event_with_elapsed(&elapsed_str, &entry.event);
     }
 
     Ok(())
 }
 
-/// Format elapsed time as a right-aligned string (e.g., "     +0s", "   +12s", "+1m 34s")
-fn format_elapsed_time(event_idx: usize, _total: usize) -> String {
-    // Simplified: use event index as proxy for seconds
-    // In a real implementation, we'd compute actual elapsed time from timestamps
-    #[allow(clippy::cast_possible_truncation)]
-    let secs = event_idx as u64;
+/// Format elapsed time from a chrono Duration as a right-aligned string.
+fn format_elapsed_from_duration(duration: chrono::Duration) -> String {
+    let secs = duration.num_seconds().max(0) as u64;
 
     let time_str = if secs >= 60 {
         format!("+{}m {:02}s", secs / 60, secs % 60)
