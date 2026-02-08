@@ -1475,16 +1475,15 @@ async fn parallel_session_log_contains_all_events() {
         .collect();
     assert_eq!(task_starts.len(), 3, "one TaskStarted per task");
 
-    // Should have TaskCompleted events for each task (emitted from both
-    // retry loop and worktree execution, so 2 per successful task)
+    // Should have TaskCompleted events for each task (one per successful task)
     let task_completes: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, Event::TaskCompleted { .. }))
         .collect();
     assert_eq!(
         task_completes.len(),
-        6,
-        "two TaskCompleted per successful task"
+        3,
+        "one TaskCompleted per successful task"
     );
 
     // Should have StepSummary for each task

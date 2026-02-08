@@ -496,13 +496,6 @@ async fn run_with_retries<E: StepExecutor>(
 
         match &step_result.outcome {
             StepOutcome::Success { summary } => {
-                emit(
-                    logger,
-                    Event::TaskCompleted {
-                        task_id,
-                        summary: summary.clone(),
-                    },
-                );
                 return Ok((Some(summary.clone()), task_metrics));
             }
             StepOutcome::Failed { reason, learnings } => {
