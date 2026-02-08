@@ -64,6 +64,12 @@ pub struct SessionResult {
 // ---------------------------------------------------------------------------
 
 fn create_session_branch(repo: &Path, name: &str) -> anyhow::Result<()> {
+    // Check for stale session branch from a previous run
+    if git::branch_exists(repo, name)? {
+        anyhow::bail!(
+            "stale session branch '{name}' exists from a previous run. Delete it with: git branch -D {name}"
+        );
+    }
     git::git(repo, &["branch", name])?;
     Ok(())
 }
@@ -809,5 +815,55 @@ fn finalize_session(
             },
         );
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Create a temp git repo with an initial commit.
+    fn init_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git::git(&repo, &["init"]).unwrap();
+        git::git(&repo, &["config", "user.email", "test@test.com"]).unwrap();
+        git::git(&repo, &["config", "user.name", "Test"]).unwrap();
+        std::fs::write(repo.join("README.md"), "# test\n").unwrap();
+        git::git(&repo, &["add", "."]).unwrap();
+        git::git(&repo, &["commit", "-m", "initial"]).unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn create_session_branch_fails_on_stale_branch() {
+        let (_dir, repo) = init_repo();
+
+        // Create a stale session branch
+        git::git(&repo, &["branch", "rloop-05"]).unwrap();
+
+        // Attempt to create session branch should fail with clear error
+        let result = create_session_branch(&repo, "rloop-05");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stale session branch"));
+        assert!(err.contains("rloop-05"));
+        assert!(err.contains("git branch -D"));
+    }
+
+    #[test]
+    fn create_session_branch_succeeds_when_clean() {
+        let (_dir, repo) = init_repo();
+
+        // Should succeed when branch doesn't exist
+        let result = create_session_branch(&repo, "rloop-05");
+        assert!(result.is_ok());
+
+        // Branch should now exist
+        assert!(git::branch_exists(&repo, "rloop-05").unwrap());
+
+        // Cleanup
+        git::git(&repo, &["branch", "-D", "rloop-05"]).unwrap();
     }
 }

@@ -38,6 +38,19 @@ pub fn current_branch(repo: impl AsRef<Path>) -> anyhow::Result<String> {
     git(repo.as_ref(), &["branch", "--show-current"])
 }
 
+/// Check if a branch exists.
+///
+/// # Errors
+/// Returns an error if the git command fails (e.g. not a repo).
+pub fn branch_exists(repo: impl AsRef<Path>, branch: &str) -> anyhow::Result<bool> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo.as_ref())
+        .output()
+        .context("failed to run git rev-parse")?;
+    Ok(output.status.success())
+}
+
 /// Assert the repo has at least one commit.
 ///
 /// # Errors
@@ -67,6 +80,7 @@ pub fn assert_clean_worktree(repo: impl AsRef<Path>) -> anyhow::Result<()> {
 ///
 /// # Errors
 /// Returns an error if directory creation fails or git worktree command fails.
+/// Returns a clear error if the worktree branch already exists from a previous session.
 pub fn create_worktree(
     repo: impl AsRef<Path>,
     task_id: TaskId,
@@ -80,6 +94,22 @@ pub fn create_worktree(
 
     let wt_path = worktree_dir.join(&label);
     let branch = format!("rloop-wt-{label}");
+
+    // Check for stale worktree branch from a previous session
+    if branch_exists(repo, &branch)? {
+        bail!(
+            "stale worktree branch '{branch}' exists from a previous run. Delete it with: git branch -D {branch}"
+        );
+    }
+
+    // Check for stale worktree directory
+    if wt_path.exists() {
+        bail!(
+            "stale worktree directory '{}' exists from a previous run. Remove it with: rm -rf {}",
+            wt_path.display(),
+            wt_path.display()
+        );
+    }
 
     git(
         repo,
@@ -293,6 +323,75 @@ mod tests {
         git(&repo, &["add", "."]).unwrap();
         git(&repo, &["commit", "-m", "initial"]).unwrap();
         (dir, repo)
+    }
+
+    // --- branch_exists tests ---
+
+    #[test]
+    fn branch_exists_returns_true_for_existing_branch() {
+        let (_dir, repo) = init_repo();
+
+        // main branch should exist
+        assert!(branch_exists(&repo, "main").unwrap());
+
+        // Create a new branch
+        git(&repo, &["branch", "test-branch"]).unwrap();
+        assert!(branch_exists(&repo, "test-branch").unwrap());
+    }
+
+    #[test]
+    fn branch_exists_returns_false_for_nonexistent_branch() {
+        let (_dir, repo) = init_repo();
+
+        assert!(!branch_exists(&repo, "nonexistent-branch").unwrap());
+    }
+
+    // --- create_worktree stale branch detection tests ---
+
+    #[test]
+    fn create_worktree_fails_on_stale_branch() {
+        let (_dir, repo) = init_repo();
+
+        // Create a stale worktree branch
+        git(&repo, &["branch", "rloop-wt-05"]).unwrap();
+
+        // Attempt to create worktree should fail with clear error
+        let result = create_worktree(&repo, TaskId(5), "main");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stale worktree branch"));
+        assert!(err.contains("rloop-wt-05"));
+        assert!(err.contains("git branch -D"));
+    }
+
+    #[test]
+    fn create_worktree_fails_on_stale_directory() {
+        let (_dir, repo) = init_repo();
+
+        // Create a stale worktree directory
+        let wt_path = repo.join(".rloop/worktrees/05");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        std::fs::write(wt_path.join("stale.txt"), "stale file\n").unwrap();
+
+        // Attempt to create worktree should fail with clear error
+        let result = create_worktree(&repo, TaskId(5), "main");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stale worktree directory"));
+        assert!(err.contains("rm -rf"));
+    }
+
+    #[test]
+    fn create_worktree_succeeds_when_clean() {
+        let (_dir, repo) = init_repo();
+
+        let worktree = create_worktree(&repo, TaskId(5), "main").unwrap();
+        assert_eq!(worktree.task_id, TaskId(5));
+        assert_eq!(worktree.branch, "rloop-wt-05");
+        assert!(worktree.path.exists());
+
+        // Cleanup
+        cleanup_worktree(&repo, &worktree).unwrap();
     }
 
     // --- merge_no_commit tests ---
