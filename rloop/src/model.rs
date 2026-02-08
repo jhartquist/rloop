@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use strum::Display;
 
-#[derive(Copy, Clone, Debug, Display, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Model {
     Haiku,
     Sonnet,
@@ -22,11 +22,11 @@ mod tests {
     #[test]
     fn deserialize_valid() {
         let h: Model = serde_yaml::from_str("Haiku").unwrap();
-        assert!(matches!(h, Model::Haiku));
+        assert_eq!(h, Model::Haiku);
         let s: Model = serde_yaml::from_str("Sonnet").unwrap();
-        assert!(matches!(s, Model::Sonnet));
+        assert_eq!(s, Model::Sonnet);
         let o: Model = serde_yaml::from_str("Opus").unwrap();
-        assert!(matches!(o, Model::Opus));
+        assert_eq!(o, Model::Opus);
     }
 
     #[test]

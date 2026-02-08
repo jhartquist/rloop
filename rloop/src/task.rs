@@ -22,6 +22,7 @@ impl fmt::Display for TaskId {
 pub struct VerificationCommands(pub Vec<String>);
 
 /// A task loaded from a markdown file with YAML frontmatter.
+#[derive(Clone, Debug)]
 pub struct Task {
     pub id: TaskId,
     pub title: String,
@@ -367,7 +368,7 @@ mod tests {
         let path = write_task_file(dir.path(), "00.md", "---\nid: 0\n---\nDo something.\n");
         let task = load_task(&path).unwrap();
         assert_eq!(task.id, TaskId(0));
-        assert!(matches!(task.model, Model::Sonnet)); // default
+        assert_eq!(task.model, Model::Sonnet); // default
         assert!(task.depends_on.is_empty());
         assert!(task.verification.is_none());
         assert!(!task.completed);
@@ -392,7 +393,7 @@ Do the thing.
         let path = write_task_file(dir.path(), "03.md", content);
         let task = load_task(&path).unwrap();
         assert_eq!(task.id, TaskId(3));
-        assert!(matches!(task.model, Model::Opus));
+        assert_eq!(task.model, Model::Opus);
         assert_eq!(task.depends_on, vec![TaskId(1), TaskId(2)]);
         assert_eq!(task.verification.as_ref().unwrap().0.len(), 2);
         assert!(task.completed);

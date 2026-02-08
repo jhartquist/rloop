@@ -223,7 +223,7 @@ mod tests {
             tools: vec![],
             output_format: None,
         };
-        assert!(matches!(config.model, Model::Sonnet));
+        assert_eq!(config.model, Model::Sonnet);
         assert!(config.tools.is_empty());
         assert!(config.output_format.is_none());
     }

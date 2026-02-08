@@ -154,13 +154,7 @@ async fn execute_dag<E: StepExecutor>(
             let sem = Arc::clone(&semaphore);
             let repo = repo.to_path_buf();
             let task_id = task.id;
-            let task_model = task.model;
-            let task_depends_on = task.depends_on.clone();
-            let task_verification = task.verification.clone();
-            let task_completed = task.completed;
-            let task_description = task.description.clone();
-            let task_source_path = task.source_path.clone();
-            let task_title = task.title.clone();
+            let task = task.clone();
             let session_branch = session_branch.to_string();
             let config = config.clone();
             let logger = logger.clone();
@@ -172,18 +166,6 @@ async fn execute_dag<E: StepExecutor>(
                     .acquire()
                     .await
                     .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
-
-                // Reconstruct task for the future
-                let task = Task {
-                    id: task_id,
-                    title: task_title,
-                    model: task_model,
-                    depends_on: task_depends_on,
-                    verification: task_verification,
-                    completed: task_completed,
-                    description: task_description,
-                    source_path: task_source_path,
-                };
 
                 let (worktree, outcome) = execute_task_in_worktree(
                     &repo,

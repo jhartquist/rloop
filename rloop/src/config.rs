@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Model;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub model: Model,
     pub max_turns: u32,
@@ -19,7 +19,7 @@ pub struct Config {
 }
 
 /// Configuration for `rloop task` subcommands.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TaskConfig {
     /// Model used by `rloop task new` for the enhancement LLM query.
     pub enhance_model: Model,
@@ -240,11 +240,11 @@ mod tests {
     fn load_defaults_when_no_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Opus));
+        assert_eq!(config.model, Model::Opus);
         assert_eq!(config.max_turns, 50);
         assert_eq!(config.max_retries, 10);
         assert_eq!(config.timeout_seconds, 300);
-        assert!(matches!(config.task.enhance_model, Model::Sonnet));
+        assert_eq!(config.task.enhance_model, Model::Sonnet);
         assert_eq!(config.max_parallel, 1);
     }
 
@@ -253,7 +253,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "[step]\nmodel = \"Opus\"\n").unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Opus));
+        assert_eq!(config.model, Model::Opus);
         assert_eq!(config.max_turns, 50); // default
     }
 
@@ -266,7 +266,7 @@ mod tests {
         )
         .unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Haiku));
+        assert_eq!(config.model, Model::Haiku);
         assert_eq!(config.max_turns, 30);
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.timeout_seconds, 60);
@@ -319,11 +319,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), &toml_str).unwrap();
         let loaded = load_config(dir.path()).unwrap();
-        assert!(matches!(loaded.model, Model::Opus));
+        assert_eq!(loaded.model, Model::Opus);
         assert_eq!(loaded.max_turns, 50);
         assert_eq!(loaded.max_retries, 10);
         assert_eq!(loaded.timeout_seconds, 300);
-        assert!(matches!(loaded.task.enhance_model, Model::Sonnet));
+        assert_eq!(loaded.task.enhance_model, Model::Sonnet);
         assert_eq!(loaded.max_parallel, 1);
     }
 
@@ -336,9 +336,9 @@ mod tests {
         )
         .unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.task.enhance_model, Model::Haiku));
+        assert_eq!(config.task.enhance_model, Model::Haiku);
         // step defaults still apply
-        assert!(matches!(config.model, Model::Opus));
+        assert_eq!(config.model, Model::Opus);
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "[task]\n").unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.task.enhance_model, Model::Sonnet));
+        assert_eq!(config.task.enhance_model, Model::Sonnet);
     }
 
     #[test]
@@ -358,8 +358,8 @@ mod tests {
         )
         .unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Haiku));
-        assert!(matches!(config.task.enhance_model, Model::Opus));
+        assert_eq!(config.model, Model::Haiku);
+        assert_eq!(config.task.enhance_model, Model::Opus);
     }
 
     #[test]
@@ -382,7 +382,7 @@ mod tests {
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.max_parallel, 4);
         // step defaults still apply
-        assert!(matches!(config.model, Model::Opus));
+        assert_eq!(config.model, Model::Opus);
     }
 
     #[test]
@@ -402,8 +402,8 @@ mod tests {
         )
         .unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert!(matches!(config.model, Model::Haiku));
-        assert!(matches!(config.task.enhance_model, Model::Opus));
+        assert_eq!(config.model, Model::Haiku);
+        assert_eq!(config.task.enhance_model, Model::Opus);
         assert_eq!(config.max_parallel, 3);
     }
 
@@ -475,8 +475,8 @@ mod tests {
         let config = load_config(dir.path()).unwrap();
         // Template has max_parallel commented out — should default to 1
         assert_eq!(config.max_parallel, 1);
-        assert!(matches!(config.model, Model::Opus));
-        assert!(matches!(config.task.enhance_model, Model::Sonnet));
+        assert_eq!(config.model, Model::Opus);
+        assert_eq!(config.task.enhance_model, Model::Sonnet);
     }
 
     #[test]

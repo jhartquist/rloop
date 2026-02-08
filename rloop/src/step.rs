@@ -635,7 +635,7 @@ mod tests {
             events: vec![],
         };
         assert_eq!(result.task_id, TaskId(5));
-        assert!(matches!(result.model, Model::Sonnet));
+        assert_eq!(result.model, Model::Sonnet);
         assert!(result.cc_session_id.is_none());
         assert!(result.model_id.is_none());
         assert_eq!(result.input_tokens, 1000);

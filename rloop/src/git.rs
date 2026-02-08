@@ -6,6 +6,7 @@ use anyhow::{Context, bail};
 use crate::task::TaskId;
 
 /// An active git worktree for task execution.
+#[derive(Debug)]
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
