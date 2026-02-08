@@ -653,7 +653,7 @@ fn cmd_task_show(id: u32) -> anyhow::Result<()> {
     let task_path = tasks_dir.join(format!("{target}.md"));
 
     let task = rloop::task::load_task(&task_path)
-        .map_err(|_| anyhow::anyhow!("task {target} not found"))?;
+        .with_context(|| format!("failed to load task {target}"))?;
 
     // Header: Task ID and title
     if task.title.is_empty() {
