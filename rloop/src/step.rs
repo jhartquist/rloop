@@ -78,6 +78,19 @@ pub trait StepExecutor: Send + Sync {
     ) -> impl Future<Output = anyhow::Result<StepResult>> + Send;
 }
 
+/// Blanket implementation for Arc<E> to enable sharing executors across async tasks.
+impl<E: StepExecutor> StepExecutor for std::sync::Arc<E> {
+    async fn execute(
+        &self,
+        task: &Task,
+        worktree_path: &Path,
+        config: &Config,
+        prior_learnings: &[String],
+    ) -> anyhow::Result<StepResult> {
+        (**self).execute(task, worktree_path, config, prior_learnings).await
+    }
+}
+
 /// Production executor that calls the real Claude agent SDK.
 pub struct RealStepExecutor;
 

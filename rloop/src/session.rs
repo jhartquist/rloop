@@ -109,7 +109,7 @@ async fn execute_dag<E: StepExecutor>(
     parent_branch: &str,
     config: &Config,
     logger: &EventSender,
-    executor: &E,
+    executor: Arc<E>,
 ) -> anyhow::Result<DagResult> {
     let session_start = Instant::now();
     let mut completed_tasks: Vec<TaskId> = Vec::new();
@@ -164,6 +164,7 @@ async fn execute_dag<E: StepExecutor>(
             let session_branch = session_branch.to_string();
             let config = config.clone();
             let logger = logger.clone();
+            let executor = Arc::clone(&executor);
 
             futures.push(Box::pin(async move {
                 // Acquire semaphore permit (controls concurrency)
@@ -190,7 +191,7 @@ async fn execute_dag<E: StepExecutor>(
                     &session_branch,
                     &config,
                     &logger,
-                    &StepExecutorRef(std::ptr::from_ref::<E>(executor)),
+                    executor,
                 )
                 .await?;
 
@@ -331,24 +332,6 @@ async fn execute_dag<E: StepExecutor>(
     })
 }
 
-/// Wrapper to smuggle an executor reference across the Send boundary.
-///
-/// The executor outlives the spawned future since `execute_dag` awaits all
-/// futures before returning. The raw pointer is sound because:
-/// - The executor is borrowed for the entire lifetime of `execute_dag`
-/// - All futures are awaited within `execute_dag` before it returns
-/// - `StepExecutor` requires `Send + Sync`
-struct StepExecutorRef<E>(*const E);
-unsafe impl<E: Send + Sync> Send for StepExecutorRef<E> {}
-unsafe impl<E: Send + Sync> Sync for StepExecutorRef<E> {}
-
-impl<E: StepExecutor> StepExecutorRef<E> {
-    /// # Safety
-    /// The caller must ensure the pointed-to executor outlives this reference.
-    unsafe fn get(&self) -> &E {
-        unsafe { &*self.0 }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Task execution (single task within a session)
@@ -391,7 +374,7 @@ async fn execute_task_in_worktree<E: StepExecutor>(
     session_branch: &str,
     config: &Config,
     logger: &EventSender,
-    executor_ref: &StepExecutorRef<E>,
+    executor: Arc<E>,
 ) -> anyhow::Result<(Worktree, TaskOutcome)> {
     let task_id = task.id;
     let task_start = Instant::now();
@@ -415,12 +398,9 @@ async fn execute_task_in_worktree<E: StepExecutor>(
         eprintln!("warning: failed to lock worktree for task {task_id}: {e}");
     }
 
-    // SAFETY: executor outlives this call — execute_dag awaits all futures before returning
-    let executor = unsafe { executor_ref.get() };
-
     // Execute with retries
     let (summary, mut task_metrics) =
-        run_with_retries(task, &worktree, config, logger, executor).await?;
+        run_with_retries(task, &worktree, config, logger, &executor).await?;
     task_metrics.duration = task_start.elapsed();
 
     let success = summary.is_some();
@@ -560,7 +540,7 @@ pub async fn run_session(
     config: &Config,
     auto_merge: bool,
 ) -> anyhow::Result<SessionResult> {
-    run_session_with(repo, target_task, config, auto_merge, &RealStepExecutor).await
+    run_session_with(repo, target_task, config, auto_merge, Arc::new(RealStepExecutor)).await
 }
 
 /// Run a session with a custom executor (for testing).
@@ -572,7 +552,7 @@ pub async fn run_session_with<E: StepExecutor>(
     target_task: TaskId,
     config: &Config,
     auto_merge: bool,
-    executor: &E,
+    executor: Arc<E>,
 ) -> anyhow::Result<SessionResult> {
     let repo = repo.as_ref();
 
@@ -683,7 +663,7 @@ pub async fn run_all_session(
     config: &Config,
     auto_merge: bool,
 ) -> anyhow::Result<SessionResult> {
-    run_all_session_with(repo, config, auto_merge, &RealStepExecutor).await
+    run_all_session_with(repo, config, auto_merge, Arc::new(RealStepExecutor)).await
 }
 
 /// Run all incomplete tasks in DAG order with a custom executor (for testing).
@@ -695,7 +675,7 @@ pub async fn run_all_session_with<E: StepExecutor>(
     repo: impl AsRef<Path>,
     config: &Config,
     auto_merge: bool,
-    executor: &E,
+    executor: Arc<E>,
 ) -> anyhow::Result<SessionResult> {
     let repo = repo.as_ref();
 

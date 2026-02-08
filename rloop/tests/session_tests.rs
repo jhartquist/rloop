@@ -1,7 +1,7 @@
 mod helpers;
 
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -85,7 +85,7 @@ async fn single_task_no_deps() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
@@ -115,7 +115,7 @@ async fn linear_chain() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert_eq!(result.completed_tasks.len(), 3);
@@ -141,7 +141,7 @@ async fn skip_completed_deps() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(1), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(1), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(!result.completed_tasks.contains(&TaskId(0)));
@@ -169,7 +169,7 @@ async fn failure_blocks_dependents() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
@@ -205,7 +205,7 @@ async fn failure_continues_unblocked() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[1]);
-    let result = run_session_with(&repo, TaskId(3), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(result.completed_tasks.contains(&TaskId(0)));
@@ -224,7 +224,7 @@ async fn session_branch_naming() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(5), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(5), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert_eq!(result.branch, "rloop-05");
@@ -242,7 +242,7 @@ async fn auto_merge_on_success() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), true, &executor)
+    let result = run_session_with(&repo, TaskId(0), &default_config(), true, Arc::new(executor))
         .await
         .unwrap();
     assert!(result.auto_merged);
@@ -258,7 +258,7 @@ async fn auto_merge_skipped_on_failure() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::failing(&[0]);
-    let result = run_session_with(&repo, TaskId(0), &default_config(), true, &executor)
+    let result = run_session_with(&repo, TaskId(0), &default_config(), true, Arc::new(executor))
         .await
         .unwrap();
     assert!(!result.auto_merged);
@@ -277,7 +277,7 @@ async fn session_logs_events() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let _result = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
+    let _result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     let entries: Vec<_> = std::fs::read_dir(&sessions_dir)
@@ -308,7 +308,7 @@ async fn run_all_tasks() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_all_session_with(&repo, &default_config(), false, &executor)
+    let result = run_all_session_with(&repo, &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert_eq!(result.completed_tasks.len(), 3);
@@ -336,7 +336,7 @@ async fn run_all_skips_completed() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_all_session_with(&repo, &default_config(), false, &executor)
+    let result = run_all_session_with(&repo, &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(!result.completed_tasks.contains(&TaskId(0)));
@@ -358,7 +358,7 @@ async fn run_all_nothing_to_do() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_all_session_with(&repo, &default_config(), false, &executor)
+    let result = run_all_session_with(&repo, &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
     assert!(result.completed_tasks.is_empty());
@@ -377,7 +377,7 @@ async fn session_fails_on_no_commits() {
     helpers::create_task_file(&tasks_dir, 0, &helpers::minimal_task(0, "Task"));
 
     let executor = MockExecutor::all_succeed();
-    let err = run_session_with(dir.path(), TaskId(0), &default_config(), false, &executor)
+    let err = run_session_with(dir.path(), TaskId(0), &default_config(), false, Arc::new(executor))
         .await
         .unwrap_err();
     let msg = format!("{err:#}");
@@ -400,7 +400,7 @@ async fn session_fails_on_dirty_worktree() {
     std::fs::write(repo.join("dirty.txt"), "uncommitted\n").unwrap();
 
     let executor = MockExecutor::all_succeed();
-    let err = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
+    let err = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
         .await
         .unwrap_err();
     let msg = format!("{err:#}");
@@ -420,7 +420,7 @@ async fn metrics_accumulate_for_single_task() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(0), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(0), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -456,7 +456,7 @@ async fn metrics_accumulate_across_tasks() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(2), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -486,7 +486,7 @@ async fn metrics_include_failed_tasks() {
 
     let executor = MockExecutor::failing(&[1]);
     let config = default_config();
-    let result = run_session_with(&repo, TaskId(1), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(1), &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -521,7 +521,7 @@ async fn session_log_contains_metric_events() {
     helpers::commit_all(&repo, "add tasks");
 
     let executor = MockExecutor::all_succeed();
-    let result = run_session_with(&repo, TaskId(1), &default_config(), false, &executor)
+    let result = run_session_with(&repo, TaskId(1), &default_config(), false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -822,9 +822,9 @@ async fn parallel_diamond_dag() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -863,9 +863,9 @@ async fn parallel_wide_dag_throttled() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(5), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(5), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -907,9 +907,9 @@ async fn parallel_failure_mid_flight() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[1]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -943,9 +943,9 @@ async fn max_parallel_one_linear_chain() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(1);
-    let result = run_session_with(&repo, TaskId(2), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -981,9 +981,9 @@ async fn max_parallel_one_failure_blocks_dependent() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[1]));
     let config = parallel_config(1);
-    let result = run_session_with(&repo, TaskId(2), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1030,7 +1030,7 @@ async fn parallel_merge_conflict_preserves_branch() {
     // The second to merge will conflict during rebase, but the merge-fix
     // agent should resolve it.
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(2), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -1075,7 +1075,7 @@ async fn parallel_merge_conflict_logs_merge_fix_events() {
 
     // max_parallel=2: concurrent execution causes divergent branches
     let config = parallel_config(2);
-    let _result = run_session_with(&repo, TaskId(2), &config, false, &executor)
+    let _result = run_session_with(&repo, TaskId(2), &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -1144,7 +1144,7 @@ async fn parallel_non_conflicting_writes_merge() {
     executor.add_write(1, "file_b.txt", "content B\n");
 
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(2), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(2), &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -1185,9 +1185,9 @@ async fn parallel_diamond_concurrent_execution() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1235,9 +1235,9 @@ async fn parallel_wide_five_tasks_throttled_to_three() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(3);
-    let result = run_session_with(&repo, TaskId(5), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(5), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1277,7 +1277,7 @@ async fn parallel_merge_conflict_invokes_merge_fix() {
     executor.add_write(1, "shared.txt", "content from task 1\n");
 
     let config = parallel_config(2);
-    let _result = run_all_session_with(&repo, &config, false, &executor)
+    let _result = run_all_session_with(&repo, &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -1340,9 +1340,9 @@ async fn parallel_failure_sibling_completes_dependent_skipped() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[1]));
     let config = parallel_config(3);
-    let result = run_all_session_with(&repo, &config, false, &executor)
+    let result = run_all_session_with(&repo, &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1373,9 +1373,9 @@ async fn parallel_run_all_with_concurrency() {
     helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "Task C"));
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_all_session_with(&repo, &config, false, &executor)
+    let result = run_all_session_with(&repo, &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1419,9 +1419,9 @@ async fn parallel_metrics_aggregate_correctly() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1455,9 +1455,9 @@ async fn parallel_session_log_contains_all_events() {
     helpers::create_task_file(&tasks_dir, 2, &helpers::minimal_task(2, "C"));
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let _result = run_all_session_with(&repo, &config, false, &executor)
+    let _result = run_all_session_with(&repo, &config, false, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1627,7 +1627,7 @@ async fn parallel_three_tasks_write_different_files() {
     executor.add_write(2, "file_c.txt", "content C\n");
 
     let config = parallel_config(3);
-    let result = run_session_with(&repo, TaskId(3), &config, false, &executor)
+    let result = run_session_with(&repo, TaskId(3), &config, false, Arc::new(executor))
         .await
         .unwrap();
 
@@ -1653,9 +1653,9 @@ async fn parallel_auto_merge() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[]));
     let config = parallel_config(2);
-    let result = run_session_with(&repo, TaskId(2), &config, true, &executor)
+    let result = run_session_with(&repo, TaskId(2), &config, true, Arc::clone(&executor))
         .await
         .unwrap();
 
@@ -1685,9 +1685,9 @@ async fn parallel_failure_prevents_auto_merge() {
     );
     helpers::commit_all(&repo, "add tasks");
 
-    let executor = ConcurrencyTrackingExecutor::new(&[1]);
+    let executor = Arc::new(ConcurrencyTrackingExecutor::new(&[1]));
     let config = parallel_config(2);
-    let result = run_all_session_with(&repo, &config, true, &executor)
+    let result = run_all_session_with(&repo, &config, true, Arc::clone(&executor))
         .await
         .unwrap();
 
