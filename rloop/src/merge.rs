@@ -24,11 +24,12 @@ async fn attempt_merge_fix(
     worktree_path: &Path,
     task: &Task,
     session_branch: &str,
+    attempt: u32,
     logger: &EventSender,
 ) -> anyhow::Result<bool> {
     let task_id = task.id;
 
-    logger.send(Event::MergeFixStarted { task_id });
+    logger.send(Event::MergeFixStarted { task_id, attempt });
 
     // Start a --no-commit merge to get conflict markers in the worktree
     let clean = git::merge_no_commit(worktree_path, session_branch)
@@ -41,6 +42,7 @@ async fn attempt_merge_fix(
 
         logger.send(Event::MergeFixSucceeded {
             task_id,
+            attempt,
             cost_usd: 0.0,
         });
         return Ok(true);
@@ -81,6 +83,7 @@ async fn attempt_merge_fix(
 
                 logger.send(Event::MergeFixFailed {
                     task_id,
+                    attempt,
                     reason: "conflict markers remain after agent resolution attempt".into(),
                 });
                 return Ok(false);
@@ -94,6 +97,7 @@ async fn attempt_merge_fix(
 
             logger.send(Event::MergeFixSucceeded {
                 task_id,
+                attempt,
                 cost_usd: query_result.cost_usd,
             });
             Ok(true)
@@ -106,6 +110,7 @@ async fn attempt_merge_fix(
 
             logger.send(Event::MergeFixFailed {
                 task_id,
+                attempt,
                 reason: format!("merge-fix agent error: {e:#}"),
             });
             Ok(false)
@@ -176,6 +181,7 @@ pub async fn merge_with_fix(
     task_branch: &str,
     session_branch: &str,
     worktree_path: &Path,
+    attempt: u32,
     logger: &EventSender,
 ) -> anyhow::Result<()> {
     let task_id = task.id;
@@ -188,7 +194,7 @@ pub async fn merge_with_fix(
         }
 
         // Phase 2: Merge-fix agent (runs in the same task worktree)
-        let resolved = attempt_merge_fix(worktree_path, task, session_branch, logger).await?;
+        let resolved = attempt_merge_fix(worktree_path, task, session_branch, attempt, logger).await?;
 
         if resolved {
             // Fast-forward session branch to the task worktree's HEAD
@@ -198,6 +204,7 @@ pub async fn merge_with_fix(
 
             logger.send(Event::WorktreeMerged {
                 task_id,
+                attempt,
                 into_branch: session_branch.to_string(),
             });
 
@@ -214,6 +221,7 @@ pub async fn merge_with_fix(
 
     logger.send(Event::WorktreeMerged {
         task_id,
+        attempt,
         into_branch: session_branch.to_string(),
     });
 

@@ -99,6 +99,8 @@ struct ExecutionResult {
     task_id: TaskId,
     worktree: Worktree,
     outcome: TaskOutcome,
+    /// The final attempt number (for events that need it post-execution).
+    final_attempt: u32,
 }
 
 /// Execute tasks in DAG order with parallel scheduling.
@@ -175,7 +177,7 @@ async fn execute_dag<E: StepExecutor>(
                     .await
                     .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
 
-                let (worktree, outcome) = execute_task_in_worktree(
+                let (worktree, outcome, final_attempt) = execute_task_in_worktree(
                     &repo,
                     &task,
                     &session_branch,
@@ -189,6 +191,7 @@ async fn execute_dag<E: StepExecutor>(
                     task_id,
                     worktree,
                     outcome,
+                    final_attempt,
                 })
             }));
         }
@@ -265,6 +268,7 @@ async fn execute_dag<E: StepExecutor>(
                     &result.worktree.branch,
                     session_branch,
                     &result.worktree.path,
+                    result.final_attempt,
                     logger,
                 )
                 .await;
@@ -275,7 +279,7 @@ async fn execute_dag<E: StepExecutor>(
                         cleanup_worktree(repo, &result.worktree).with_context(|| {
                             format!("failed to cleanup worktree for task {task_id}")
                         })?;
-                        emit(logger, Event::WorktreeCleanedUp { task_id });
+                        emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
 
                         // Remove from tracking list (successfully cleaned up)
                         created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -289,6 +293,7 @@ async fn execute_dag<E: StepExecutor>(
                             logger,
                             Event::MergeFailed {
                                 task_id,
+                                attempt: result.final_attempt,
                                 branch: result.worktree.branch.clone(),
                                 reason: reason.clone(),
                             },
@@ -297,6 +302,7 @@ async fn execute_dag<E: StepExecutor>(
                             logger,
                             Event::TaskFailed {
                                 task_id,
+                                attempt: result.final_attempt,
                                 reason: format!("merge failed: {reason}"),
                             },
                         );
@@ -305,7 +311,7 @@ async fn execute_dag<E: StepExecutor>(
                         cleanup_worktree_preserve_branch(repo, &result.worktree).with_context(
                             || format!("failed to cleanup worktree for task {task_id}"),
                         )?;
-                        emit(logger, Event::WorktreeCleanedUp { task_id });
+                        emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
 
                         // Remove from tracking list (worktree cleaned up)
                         created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -319,7 +325,7 @@ async fn execute_dag<E: StepExecutor>(
                 cleanup_worktree(repo, &result.worktree).with_context(|| {
                     format!("failed to cleanup worktree for failed task {task_id}")
                 })?;
-                emit(logger, Event::WorktreeCleanedUp { task_id });
+                emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
 
                 // Remove from tracking list (successfully cleaned up)
                 created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -435,8 +441,8 @@ impl Drop for WorktreeCleanupGuard {
     }
 }
 
-/// Execute a single task in a worktree without merging. Returns the worktree
-/// and outcome so the caller can serialize merges.
+/// Execute a single task in a worktree without merging. Returns the worktree,
+/// outcome, and final attempt number so the caller can serialize merges.
 async fn execute_task_in_worktree<E: StepExecutor>(
     repo: &Path,
     task: &Task,
@@ -444,11 +450,9 @@ async fn execute_task_in_worktree<E: StepExecutor>(
     config: &Config,
     logger: &EventSender,
     executor: Arc<E>,
-) -> anyhow::Result<(Worktree, TaskOutcome)> {
+) -> anyhow::Result<(Worktree, TaskOutcome, u32)> {
     let task_id = task.id;
     let task_start = Instant::now();
-
-    emit(logger, Event::TaskStarted { task_id });
 
     // Create worktree off session branch
     let worktree = create_worktree(repo, task_id, session_branch)
@@ -457,10 +461,12 @@ async fn execute_task_in_worktree<E: StepExecutor>(
     // Guard ensures cleanup on early return/panic
     let mut cleanup_guard = WorktreeCleanupGuard::new(repo, worktree.clone());
 
+    // WorktreeCreated is emitted with attempt 1 since worktree is created once
     emit(
         logger,
         Event::WorktreeCreated {
             task_id,
+            attempt: 1,
             path: worktree.path.clone(),
         },
     );
@@ -471,7 +477,7 @@ async fn execute_task_in_worktree<E: StepExecutor>(
     }
 
     // Execute with retries
-    let (summary, mut task_metrics) =
+    let (summary, mut task_metrics, final_attempt) =
         run_with_retries(task, &worktree, config, logger, &executor).await?;
     task_metrics.duration = task_start.elapsed();
 
@@ -500,28 +506,28 @@ async fn execute_task_in_worktree<E: StepExecutor>(
         let msg = format!("task {task_id:02}: {summary}");
         git::git(&worktree.path, &["commit", "-m", &msg])?;
 
-        emit(logger, Event::TaskCompleted { task_id, summary });
+        emit(logger, Event::TaskCompleted { task_id, attempt: final_attempt, summary });
         // Disarm guard — caller will handle cleanup
         let worktree = cleanup_guard.disarm()?;
-        Ok((worktree, TaskOutcome::Success(task_metrics)))
+        Ok((worktree, TaskOutcome::Success(task_metrics), final_attempt))
     } else {
         // Disarm guard — caller will handle cleanup
         let worktree = cleanup_guard.disarm()?;
-        Ok((worktree, TaskOutcome::Failed(task_metrics)))
+        Ok((worktree, TaskOutcome::Failed(task_metrics), final_attempt))
     }
 }
 
 /// Retry loop: run `execute_step` up to `max_retries` times, accumulating learnings.
 ///
-/// Returns the completion summary on success (or `None` on failure) along with
-/// accumulated task metrics.
+/// Returns the completion summary on success (or `None` on failure), accumulated
+/// task metrics, and the final attempt number.
 async fn run_with_retries<E: StepExecutor>(
     task: &Task,
     worktree: &Worktree,
     config: &Config,
     logger: &EventSender,
     executor: &E,
-) -> anyhow::Result<(Option<String>, TaskMetrics)> {
+) -> anyhow::Result<(Option<String>, TaskMetrics, u32)> {
     let task_id = task.id;
     let mut attempts: u32 = 0;
     let mut prior_learnings: Vec<String> = Vec::new();
@@ -529,6 +535,10 @@ async fn run_with_retries<E: StepExecutor>(
 
     loop {
         attempts += 1;
+
+        // Emit TaskStarted for this attempt
+        emit(logger, Event::TaskStarted { task_id, attempt: attempts });
+
         emit(logger, Event::PromptSent { task_id });
 
         let step_result = executor
@@ -561,6 +571,7 @@ async fn run_with_retries<E: StepExecutor>(
             logger,
             Event::StepSummary {
                 task_id,
+                attempt: attempts,
                 step_number: attempts,
                 max_steps: config.max_retries,
                 duration: step_result.duration,
@@ -572,7 +583,7 @@ async fn run_with_retries<E: StepExecutor>(
 
         match &step_result.outcome {
             StepOutcome::Success { summary } => {
-                return Ok((Some(summary.clone()), task_metrics));
+                return Ok((Some(summary.clone()), task_metrics, attempts));
             }
             StepOutcome::Failed { reason, learnings } => {
                 prior_learnings.push(learnings.clone());
@@ -582,13 +593,14 @@ async fn run_with_retries<E: StepExecutor>(
                         logger,
                         Event::TaskFailed {
                             task_id,
+                            attempt: attempts,
                             reason: format!(
                                 "{reason} (after {attempts} attempt{})",
                                 if attempts == 1 { "" } else { "s" }
                             ),
                         },
                     );
-                    return Ok((None, task_metrics));
+                    return Ok((None, task_metrics, attempts));
                 }
             }
         }

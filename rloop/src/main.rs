@@ -798,18 +798,18 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             cc_session_id,
         } => {
             println!(
-                "{elapsed}  {} Task {task_id:02}  step {attempt}  model: {model_id}  cc: {cc_session_id}",
+                "{elapsed}  {} Task {task_id:02}-{attempt}  model: {model_id}  cc: {cc_session_id}",
                 "→".blue(),
             );
         }
-        Event::TaskStarted { task_id } => {
-            println!("{elapsed}  {} task {task_id:02}", "→".blue());
+        Event::TaskStarted { task_id, attempt } => {
+            println!("{elapsed}  {} task {task_id:02}-{attempt}", "→".blue());
         }
-        Event::TaskCompleted { task_id, summary } => {
-            println!("{elapsed}  {} task {task_id:02} — {summary}", "✓".green());
+        Event::TaskCompleted { task_id, attempt, summary } => {
+            println!("{elapsed}  {} task {task_id:02}-{attempt} — {summary}", "✓".green());
         }
-        Event::TaskFailed { task_id, reason } => {
-            println!("{elapsed}  {} task {task_id:02} — {reason}", "✗".red());
+        Event::TaskFailed { task_id, attempt, reason } => {
+            println!("{elapsed}  {} task {task_id:02}-{attempt} — {reason}", "✗".red());
         }
         Event::TaskSkipped {
             task_id,
@@ -844,25 +844,27 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         }
         Event::VerificationRan {
             task_id,
+            attempt,
             command,
             passed,
             output: _,
         } => {
             let icon = if *passed { "✓".green() } else { "✗".red() };
             let status = if *passed { "passed" } else { "failed" };
-            println!("{elapsed}  {icon} verify task {task_id:02} `{command}`: {status}");
+            println!("{elapsed}  {icon} verify task {task_id:02}-{attempt} `{command}`: {status}");
         }
-        Event::WorktreeCreated { task_id, path } => {
-            println!("{elapsed}    worktree {task_id:02} → {}", path.display());
+        Event::WorktreeCreated { task_id, attempt, path } => {
+            println!("{elapsed}    worktree {task_id:02}-{attempt} → {}", path.display());
         }
         Event::WorktreeMerged {
             task_id,
+            attempt,
             into_branch,
         } => {
-            println!("{elapsed}    merged {task_id:02} → {into_branch}");
+            println!("{elapsed}    merged {task_id:02}-{attempt} → {into_branch}");
         }
-        Event::WorktreeCleanedUp { task_id } => {
-            println!("{elapsed}    cleaned up {task_id:02}");
+        Event::WorktreeCleanedUp { task_id, attempt } => {
+            println!("{elapsed}    cleaned up {task_id:02}-{attempt}");
         }
         Event::SessionComplete { branch } => {
             println!(
@@ -890,6 +892,7 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         }
         Event::StepSummary {
             task_id,
+            attempt,
             step_number,
             max_steps,
             duration,
@@ -900,7 +903,7 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             let dur = rloop::log::format_duration(*duration);
             println!(
                 "{elapsed}    {} step {step_number}/{max_steps}  {dur}  ${cost_usd:.2}  tokens: {} in / {} out",
-                format!("task {task_id:02}").dimmed(),
+                format!("task {task_id:02}-{attempt}").dimmed(),
                 rloop::log::format_tokens(*input_tokens),
                 rloop::log::format_tokens(*output_tokens),
             );
@@ -949,29 +952,30 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         }
         Event::MergeFailed {
             task_id,
+            attempt,
             branch,
             reason,
         } => {
             println!(
-                "{elapsed}  {} task {task_id:02} merge failed — {reason}. Work preserved on branch {branch}",
+                "{elapsed}  {} task {task_id:02}-{attempt} merge failed — {reason}. Work preserved on branch {branch}",
                 "✗".red()
             );
         }
-        Event::MergeFixStarted { task_id } => {
+        Event::MergeFixStarted { task_id, attempt } => {
             println!(
-                "{elapsed}  {} task {task_id:02} merge-fix agent started",
+                "{elapsed}  {} task {task_id:02}-{attempt} merge-fix agent started",
                 "→".blue()
             );
         }
-        Event::MergeFixSucceeded { task_id, cost_usd } => {
+        Event::MergeFixSucceeded { task_id, attempt, cost_usd } => {
             println!(
-                "{elapsed}  {} task {task_id:02} merge-fix resolved (${cost_usd:.2})",
+                "{elapsed}  {} task {task_id:02}-{attempt} merge-fix resolved (${cost_usd:.2})",
                 "✓".green()
             );
         }
-        Event::MergeFixFailed { task_id, reason } => {
+        Event::MergeFixFailed { task_id, attempt, reason } => {
             println!(
-                "{elapsed}  {} task {task_id:02} merge-fix failed — {reason}",
+                "{elapsed}  {} task {task_id:02}-{attempt} merge-fix failed — {reason}",
                 "✗".red()
             );
         }
