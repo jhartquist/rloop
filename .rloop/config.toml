@@ -4,4 +4,4 @@ max_turns = 50
 max_retries = 5
 
 [session]
-max_parallel = 1
+max_parallel = 3
