@@ -398,7 +398,15 @@ async fn process_stream(
 
     let mut stream = client.receive_response();
     while let Some(result) = stream.next().await {
-        let msg = result.context("error receiving message from Claude stream")?;
+        let msg = match result {
+            Ok(m) => m,
+            Err(e) => {
+                // Skip unrecognized message types (e.g. rate_limit_event)
+                // that the SDK can't deserialize yet.
+                eprintln!("warning: skipping unrecognized stream message: {e}");
+                continue;
+            }
+        };
 
         match &msg {
             Message::System(m) => {
