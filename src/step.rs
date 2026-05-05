@@ -680,7 +680,7 @@ mod tests {
             },
             model: Model::Opus,
             cost_usd: 0.10,
-            duration: Duration::from_secs(60),
+            duration: Duration::from_mins(1),
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,

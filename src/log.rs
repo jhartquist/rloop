@@ -1714,9 +1714,9 @@ mod tests {
             std::time::Duration::from_secs(0),
             std::time::Duration::from_secs(9),
             std::time::Duration::from_secs(59),
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
             std::time::Duration::from_secs(94),
-            std::time::Duration::from_secs(600),
+            std::time::Duration::from_mins(10),
         ];
         for d in cases {
             let result = format_elapsed(d);

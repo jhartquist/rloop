@@ -398,7 +398,7 @@ fn build_enhance_prompt(
 
     if !verification.is_empty() {
         let cmds = verification.join("; ");
-        writeln!(prompt, "All tasks will use this verification: \"{cmds}\"\n",)
+        writeln!(prompt, "All tasks will use this verification: \"{cmds}\"\n")
             .expect("write to String never fails");
     }
 

@@ -30,7 +30,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: Model::Opus,
-            max_turns: 50,
+            max_turns: 500,
             max_retries: 10,
             timeout_seconds: 300,
             task: TaskConfig::default(),
@@ -182,7 +182,7 @@ fn default_config_template() -> String {
         "\
 [step]
 model = \"Opus\"
-max_turns = 50
+max_turns = 500
 max_retries = 10
 timeout_seconds = 300
 
@@ -249,7 +249,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.model, Model::Opus);
-        assert_eq!(config.max_turns, 50);
+        assert_eq!(config.max_turns, 500);
         assert_eq!(config.max_retries, 10);
         assert_eq!(config.timeout_seconds, 300);
         assert_eq!(config.task.enhance_model, Model::Sonnet);
@@ -262,7 +262,7 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), "[step]\nmodel = \"Opus\"\n").unwrap();
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.model, Model::Opus);
-        assert_eq!(config.max_turns, 50); // default
+        assert_eq!(config.max_turns, 500); // default
     }
 
     #[test]
@@ -348,7 +348,7 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), &toml_str).unwrap();
         let loaded = load_config(dir.path()).unwrap();
         assert_eq!(loaded.model, Model::Opus);
-        assert_eq!(loaded.max_turns, 50);
+        assert_eq!(loaded.max_turns, 500);
         assert_eq!(loaded.max_retries, 10);
         assert_eq!(loaded.timeout_seconds, 300);
         assert_eq!(loaded.task.enhance_model, Model::Sonnet);
