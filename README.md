@@ -23,7 +23,7 @@ For each task in a DAG:
 
 ```bash
 git clone https://github.com/jhartquist/rloop
-cd rloop/rloop
+cd rloop
 cargo install --path .
 ```
 
