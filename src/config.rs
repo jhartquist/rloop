@@ -29,7 +29,7 @@ pub struct TaskConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            model: Model::Opus,
+            model: Model::Fable,
             max_turns: 500,
             max_retries: 10,
             timeout_seconds: 300,
@@ -181,7 +181,7 @@ fn default_config_template() -> String {
     String::from(
         "\
 [step]
-model = \"Opus\"
+model = \"Fable\"
 max_turns = 500
 max_retries = 10
 timeout_seconds = 300
@@ -248,7 +248,7 @@ mod tests {
     fn load_defaults_when_no_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = load_config(dir.path()).unwrap();
-        assert_eq!(config.model, Model::Opus);
+        assert_eq!(config.model, Model::Fable);
         assert_eq!(config.max_turns, 500);
         assert_eq!(config.max_retries, 10);
         assert_eq!(config.timeout_seconds, 300);
@@ -347,7 +347,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), &toml_str).unwrap();
         let loaded = load_config(dir.path()).unwrap();
-        assert_eq!(loaded.model, Model::Opus);
+        assert_eq!(loaded.model, Model::Fable);
         assert_eq!(loaded.max_turns, 500);
         assert_eq!(loaded.max_retries, 10);
         assert_eq!(loaded.timeout_seconds, 300);
@@ -366,7 +366,7 @@ mod tests {
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.task.enhance_model, Model::Haiku);
         // step defaults still apply
-        assert_eq!(config.model, Model::Opus);
+        assert_eq!(config.model, Model::Fable);
     }
 
     #[test]
@@ -410,7 +410,7 @@ mod tests {
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.max_parallel, 4);
         // step defaults still apply
-        assert_eq!(config.model, Model::Opus);
+        assert_eq!(config.model, Model::Fable);
     }
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
         let config = load_config(dir.path()).unwrap();
         // Template has max_parallel commented out — should default to 1
         assert_eq!(config.max_parallel, 1);
-        assert_eq!(config.model, Model::Opus);
+        assert_eq!(config.model, Model::Fable);
         assert_eq!(config.task.enhance_model, Model::Sonnet);
     }
 

@@ -10,6 +10,7 @@ pub enum Model {
     Haiku,
     Sonnet,
     Opus,
+    Fable,
 }
 
 impl Model {
@@ -18,6 +19,7 @@ impl Model {
     pub const fn context_window(self) -> u64 {
         match self {
             Self::Haiku | Self::Sonnet | Self::Opus => 200_000,
+            Self::Fable => 1_000_000,
         }
     }
 }
@@ -42,6 +44,7 @@ mod tests {
         assert_eq!(Model::Haiku.to_string(), "Haiku");
         assert_eq!(Model::Sonnet.to_string(), "Sonnet");
         assert_eq!(Model::Opus.to_string(), "Opus");
+        assert_eq!(Model::Fable.to_string(), "Fable");
     }
 
     #[test]
@@ -52,6 +55,8 @@ mod tests {
         assert_eq!(s, Model::Sonnet);
         let o: Model = serde_yaml::from_str("Opus").unwrap();
         assert_eq!(o, Model::Opus);
+        let f: Model = serde_yaml::from_str("Fable").unwrap();
+        assert_eq!(f, Model::Fable);
     }
 
     #[test]
@@ -63,6 +68,8 @@ mod tests {
         assert_eq!(s, Model::Sonnet);
         let o: Model = serde_yaml::from_str("opus").unwrap();
         assert_eq!(o, Model::Opus);
+        let f: Model = serde_yaml::from_str("fable").unwrap();
+        assert_eq!(f, Model::Fable);
     }
 
     #[test]
@@ -73,6 +80,8 @@ mod tests {
         assert_eq!(s, Model::Sonnet);
         let o: Model = serde_yaml::from_str("OPUS").unwrap();
         assert_eq!(o, Model::Opus);
+        let f: Model = serde_yaml::from_str("FABLE").unwrap();
+        assert_eq!(f, Model::Fable);
     }
 
     #[test]
@@ -90,6 +99,10 @@ mod tests {
         assert_eq!(Model::from_str("opus").unwrap(), Model::Opus);
         assert_eq!(Model::from_str("Opus").unwrap(), Model::Opus);
         assert_eq!(Model::from_str("OPUS").unwrap(), Model::Opus);
+
+        assert_eq!(Model::from_str("fable").unwrap(), Model::Fable);
+        assert_eq!(Model::from_str("Fable").unwrap(), Model::Fable);
+        assert_eq!(Model::from_str("FABLE").unwrap(), Model::Fable);
     }
 
     #[test]
@@ -103,5 +116,6 @@ mod tests {
         assert_eq!(Model::Haiku.context_window(), 200_000);
         assert_eq!(Model::Sonnet.context_window(), 200_000);
         assert_eq!(Model::Opus.context_window(), 200_000);
+        assert_eq!(Model::Fable.context_window(), 1_000_000);
     }
 }

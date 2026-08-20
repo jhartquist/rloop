@@ -317,7 +317,7 @@ fn enhanced_tasks_schema() -> serde_json::Value {
                             },
                             "model": {
                                 "type": "string",
-                                "enum": ["Haiku", "Sonnet", "Opus"],
+                                "enum": ["Haiku", "Sonnet", "Opus", "Fable"],
                                 "description": "Model to use for execution"
                             }
                         },
@@ -380,7 +380,7 @@ fn build_enhance_prompt(
          - **title**: short descriptive title\n\
          - **description**: full markdown body with context and acceptance criteria\n\
          - **depends_on**: task IDs this depends on (from existing tasks or other new tasks you create)\n\
-         - **model**: which model to use (Haiku for simple, Sonnet for moderate, Opus for complex)\n\n\
+         - **model**: which model to use (Haiku for simple, Sonnet for moderate, Opus for complex, Fable for the hardest long-horizon work)\n\n\
          New tasks will be assigned sequential IDs starting at {next_id}. \
          If you create multiple tasks that depend on each other, reference the new IDs.\n",
     )
@@ -805,11 +805,25 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
         Event::TaskStarted { task_id, attempt } => {
             println!("{elapsed}  {} task {task_id:02}-{attempt}", "→".blue());
         }
-        Event::TaskCompleted { task_id, attempt, summary } => {
-            println!("{elapsed}  {} task {task_id:02}-{attempt} — {summary}", "✓".green());
+        Event::TaskCompleted {
+            task_id,
+            attempt,
+            summary,
+        } => {
+            println!(
+                "{elapsed}  {} task {task_id:02}-{attempt} — {summary}",
+                "✓".green()
+            );
         }
-        Event::TaskFailed { task_id, attempt, reason } => {
-            println!("{elapsed}  {} task {task_id:02}-{attempt} — {reason}", "✗".red());
+        Event::TaskFailed {
+            task_id,
+            attempt,
+            reason,
+        } => {
+            println!(
+                "{elapsed}  {} task {task_id:02}-{attempt} — {reason}",
+                "✗".red()
+            );
         }
         Event::TaskSkipped {
             task_id,
@@ -853,8 +867,15 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
             let status = if *passed { "passed" } else { "failed" };
             println!("{elapsed}  {icon} verify task {task_id:02}-{attempt} `{command}`: {status}");
         }
-        Event::WorktreeCreated { task_id, attempt, path } => {
-            println!("{elapsed}    worktree {task_id:02}-{attempt} → {}", path.display());
+        Event::WorktreeCreated {
+            task_id,
+            attempt,
+            path,
+        } => {
+            println!(
+                "{elapsed}    worktree {task_id:02}-{attempt} → {}",
+                path.display()
+            );
         }
         Event::WorktreeMerged {
             task_id,
@@ -967,13 +988,21 @@ fn print_event_with_elapsed(elapsed: &str, event: &rloop::log::Event) {
                 "→".blue()
             );
         }
-        Event::MergeFixSucceeded { task_id, attempt, cost_usd } => {
+        Event::MergeFixSucceeded {
+            task_id,
+            attempt,
+            cost_usd,
+        } => {
             println!(
                 "{elapsed}  {} task {task_id:02}-{attempt} merge-fix resolved (${cost_usd:.2})",
                 "✓".green()
             );
         }
-        Event::MergeFixFailed { task_id, attempt, reason } => {
+        Event::MergeFixFailed {
+            task_id,
+            attempt,
+            reason,
+        } => {
             println!(
                 "{elapsed}  {} task {task_id:02}-{attempt} merge-fix failed — {reason}",
                 "✗".red()
