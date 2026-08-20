@@ -310,11 +310,25 @@ impl SessionLogger {
             Event::TaskStarted { task_id, attempt } => {
                 eprintln!("{elapsed}  {} task {task_id:02}-{attempt}", "→".blue());
             }
-            Event::TaskCompleted { task_id, attempt, summary } => {
-                eprintln!("{elapsed}  {} task {task_id:02}-{attempt} — {summary}", "✓".green());
+            Event::TaskCompleted {
+                task_id,
+                attempt,
+                summary,
+            } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id:02}-{attempt} — {summary}",
+                    "✓".green()
+                );
             }
-            Event::TaskFailed { task_id, attempt, reason } => {
-                eprintln!("{elapsed}  {} task {task_id:02}-{attempt} — {reason}", "✗".red());
+            Event::TaskFailed {
+                task_id,
+                attempt,
+                reason,
+            } => {
+                eprintln!(
+                    "{elapsed}  {} task {task_id:02}-{attempt} — {reason}",
+                    "✗".red()
+                );
             }
             Event::TaskSkipped {
                 task_id,
@@ -334,13 +348,22 @@ impl SessionLogger {
             } => {
                 let icon = if *passed { "✓".green() } else { "✗".red() };
                 let status = if *passed { "passed" } else { "failed" };
-                eprintln!("{elapsed}  {icon} verify task {task_id:02}-{attempt} `{command}`: {status}");
+                eprintln!(
+                    "{elapsed}  {icon} verify task {task_id:02}-{attempt} `{command}`: {status}"
+                );
                 if !passed {
                     eprintln!("           {output}");
                 }
             }
-            Event::WorktreeCreated { task_id, attempt, path } => {
-                eprintln!("{elapsed}    worktree {task_id:02}-{attempt} → {}", path.display());
+            Event::WorktreeCreated {
+                task_id,
+                attempt,
+                path,
+            } => {
+                eprintln!(
+                    "{elapsed}    worktree {task_id:02}-{attempt} → {}",
+                    path.display()
+                );
             }
             Event::WorktreeMerged {
                 task_id,
@@ -369,13 +392,21 @@ impl SessionLogger {
                     "→".blue()
                 );
             }
-            Event::MergeFixSucceeded { task_id, attempt, cost_usd } => {
+            Event::MergeFixSucceeded {
+                task_id,
+                attempt,
+                cost_usd,
+            } => {
                 eprintln!(
                     "{elapsed}  {} task {task_id:02}-{attempt} merge-fix resolved (${cost_usd:.2})",
                     "✓".green()
                 );
             }
-            Event::MergeFixFailed { task_id, attempt, reason } => {
+            Event::MergeFixFailed {
+                task_id,
+                attempt,
+                reason,
+            } => {
                 eprintln!(
                     "{elapsed}  {} task {task_id:02}-{attempt} merge-fix failed — {reason}",
                     "✗".red()
@@ -725,8 +756,9 @@ impl StreamPrinter {
     /// When `max_parallel > 1`, pass `Some((task_id, attempt))` to prefix output lines.
     /// When `max_parallel == 1`, pass `None` to avoid noise.
     pub(crate) fn set_task_prefix(&mut self, task: Option<(crate::task::TaskId, u32)>) {
-        self.task_prefix =
-            task.map_or_else(String::new, |(id, attempt)| format!("[task {id:02}-{attempt}] "));
+        self.task_prefix = task.map_or_else(String::new, |(id, attempt)| {
+            format!("[task {id:02}-{attempt}] ")
+        });
     }
 
     /// Register a tool call so its result can be correlated later.
@@ -981,7 +1013,10 @@ mod tests {
                 model_id: "claude-sonnet-4-20250514".into(),
                 cc_session_id: "abc-123".into(),
             },
-            Event::TaskStarted { task_id: TaskId(1), attempt: 1 },
+            Event::TaskStarted {
+                task_id: TaskId(1),
+                attempt: 1,
+            },
             Event::WorktreeCreated {
                 task_id: TaskId(2),
                 attempt: 1,
@@ -1014,7 +1049,10 @@ mod tests {
                 attempt: 1,
                 into_branch: "main".into(),
             },
-            Event::WorktreeCleanedUp { task_id: TaskId(9), attempt: 1 },
+            Event::WorktreeCleanedUp {
+                task_id: TaskId(9),
+                attempt: 1,
+            },
             Event::MergeFailed {
                 task_id: TaskId(10),
                 attempt: 1,
@@ -1147,7 +1185,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut logger = SessionLogger::new(dir.path(), SessionId("test".into())).unwrap();
         logger
-            .log(&Event::TaskStarted { task_id: TaskId(0), attempt: 1 })
+            .log(&Event::TaskStarted {
+                task_id: TaskId(0),
+                attempt: 1,
+            })
             .unwrap();
         logger
             .log(&Event::TaskCompleted {
@@ -1272,7 +1313,10 @@ mod tests {
         let path = dir.path().join("session.jsonl");
         let mut logger = SessionLogger::new(dir.path(), SessionId("session".into())).unwrap();
         logger
-            .log(&Event::TaskStarted { task_id: TaskId(0), attempt: 1 })
+            .log(&Event::TaskStarted {
+                task_id: TaskId(0),
+                attempt: 1,
+            })
             .unwrap();
         logger
             .log(&Event::TaskCompleted {
@@ -1285,7 +1329,9 @@ mod tests {
 
         let events = load_events(&path).unwrap();
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(0) && *attempt == 1));
+        assert!(
+            matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(0) && *attempt == 1)
+        );
         assert!(matches!(&events[2], Event::SessionCancelled));
     }
 
@@ -1347,14 +1393,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("partial.jsonl");
 
-        let valid = serde_json::to_string(&Event::TaskStarted { task_id: TaskId(1), attempt: 1 }).unwrap();
+        let valid = serde_json::to_string(&Event::TaskStarted {
+            task_id: TaskId(1),
+            attempt: 1,
+        })
+        .unwrap();
         let truncated = r#"{"type":"TaskCompleted","task_id":2,"summ"#;
         let content = format!("{valid}\n{truncated}\n");
         std::fs::write(&path, content).unwrap();
 
         let events = load_events(&path).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(1) && *attempt == 1));
+        assert!(
+            matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(1) && *attempt == 1)
+        );
     }
 
     // --- write_with_backup tests ---
@@ -1480,8 +1532,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("interleaved.jsonl");
 
-        let line_started =
-            serde_json::to_string(&Event::TaskStarted { task_id: TaskId(1), attempt: 1 }).unwrap();
+        let line_started = serde_json::to_string(&Event::TaskStarted {
+            task_id: TaskId(1),
+            attempt: 1,
+        })
+        .unwrap();
         let line_completed = serde_json::to_string(&Event::TaskCompleted {
             task_id: TaskId(2),
             attempt: 1,
@@ -1549,7 +1604,10 @@ mod tests {
         let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
         for i in 0..50 {
             logger
-                .log(&Event::TaskStarted { task_id: TaskId(i), attempt: 1 })
+                .log(&Event::TaskStarted {
+                    task_id: TaskId(i),
+                    attempt: 1,
+                })
                 .unwrap();
             logger
                 .log(&Event::TaskCompleted {
@@ -1733,7 +1791,10 @@ mod tests {
         let logger = SessionLogger::new(dir.path(), session_id).unwrap();
         let (sender, handle) = spawn_logger(logger);
 
-        sender.send(Event::TaskStarted { task_id: TaskId(0), attempt: 1 });
+        sender.send(Event::TaskStarted {
+            task_id: TaskId(0),
+            attempt: 1,
+        });
         sender.send(Event::TaskCompleted {
             task_id: TaskId(0),
             attempt: 1,
@@ -1747,7 +1808,9 @@ mod tests {
         let path = dir.path().join("sender-test.jsonl");
         let events = load_events(&path).unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(0) && *attempt == 1));
+        assert!(
+            matches!(&events[0], Event::TaskStarted { task_id, attempt } if *task_id == TaskId(0) && *attempt == 1)
+        );
         assert!(
             matches!(&events[1], Event::TaskCompleted { task_id, attempt, .. } if *task_id == TaskId(0) && *attempt == 1)
         );
@@ -1761,8 +1824,14 @@ mod tests {
         let (sender1, handle) = spawn_logger(logger);
         let sender2 = sender1.clone();
 
-        sender1.send(Event::TaskStarted { task_id: TaskId(1), attempt: 1 });
-        sender2.send(Event::TaskStarted { task_id: TaskId(2), attempt: 1 });
+        sender1.send(Event::TaskStarted {
+            task_id: TaskId(1),
+            attempt: 1,
+        });
+        sender2.send(Event::TaskStarted {
+            task_id: TaskId(2),
+            attempt: 1,
+        });
 
         drop(sender1);
         drop(sender2);
@@ -1781,7 +1850,10 @@ mod tests {
         let (sender, handle) = spawn_logger(logger);
 
         for i in 0..50 {
-            sender.send(Event::TaskStarted { task_id: TaskId(i), attempt: 1 });
+            sender.send(Event::TaskStarted {
+                task_id: TaskId(i),
+                attempt: 1,
+            });
         }
 
         drop(sender);
@@ -1829,7 +1901,10 @@ mod tests {
         let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
 
         logger
-            .log(&Event::TaskStarted { task_id: TaskId(0), attempt: 1 })
+            .log(&Event::TaskStarted {
+                task_id: TaskId(0),
+                attempt: 1,
+            })
             .unwrap();
 
         let path = dir.path().join("timestamp-test.jsonl");
@@ -1846,7 +1921,10 @@ mod tests {
         let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
 
         logger
-            .log(&Event::TaskStarted { task_id: TaskId(1), attempt: 1 })
+            .log(&Event::TaskStarted {
+                task_id: TaskId(1),
+                attempt: 1,
+            })
             .unwrap();
         logger
             .log(&Event::TaskCompleted {
@@ -1870,7 +1948,10 @@ mod tests {
         let path = dir.path().join("old-format.jsonl");
 
         // Write old-format JSONL (bare events, no timestamp envelope)
-        let event = Event::TaskStarted { task_id: TaskId(0), attempt: 1 };
+        let event = Event::TaskStarted {
+            task_id: TaskId(0),
+            attempt: 1,
+        };
         let line = serde_json::to_string(&event).unwrap();
         std::fs::write(&path, format!("{line}\n")).unwrap();
 
@@ -1891,7 +1972,10 @@ mod tests {
 
         for i in 0..10 {
             logger
-                .log(&Event::TaskStarted { task_id: TaskId(i), attempt: 1 })
+                .log(&Event::TaskStarted {
+                    task_id: TaskId(i),
+                    attempt: 1,
+                })
                 .unwrap();
         }
 

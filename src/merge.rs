@@ -194,7 +194,8 @@ pub async fn merge_with_fix(
         }
 
         // Phase 2: Merge-fix agent (runs in the same task worktree)
-        let resolved = attempt_merge_fix(worktree_path, task, session_branch, attempt, logger).await?;
+        let resolved =
+            attempt_merge_fix(worktree_path, task, session_branch, attempt, logger).await?;
 
         if resolved {
             // Fast-forward session branch to the task worktree's HEAD

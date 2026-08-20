@@ -279,7 +279,13 @@ async fn execute_dag<E: StepExecutor>(
                         cleanup_worktree(repo, &result.worktree).with_context(|| {
                             format!("failed to cleanup worktree for task {task_id}")
                         })?;
-                        emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
+                        emit(
+                            logger,
+                            Event::WorktreeCleanedUp {
+                                task_id,
+                                attempt: result.final_attempt,
+                            },
+                        );
 
                         // Remove from tracking list (successfully cleaned up)
                         created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -311,7 +317,13 @@ async fn execute_dag<E: StepExecutor>(
                         cleanup_worktree_preserve_branch(repo, &result.worktree).with_context(
                             || format!("failed to cleanup worktree for task {task_id}"),
                         )?;
-                        emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
+                        emit(
+                            logger,
+                            Event::WorktreeCleanedUp {
+                                task_id,
+                                attempt: result.final_attempt,
+                            },
+                        );
 
                         // Remove from tracking list (worktree cleaned up)
                         created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -325,7 +337,13 @@ async fn execute_dag<E: StepExecutor>(
                 cleanup_worktree(repo, &result.worktree).with_context(|| {
                     format!("failed to cleanup worktree for failed task {task_id}")
                 })?;
-                emit(logger, Event::WorktreeCleanedUp { task_id, attempt: result.final_attempt });
+                emit(
+                    logger,
+                    Event::WorktreeCleanedUp {
+                        task_id,
+                        attempt: result.final_attempt,
+                    },
+                );
 
                 // Remove from tracking list (successfully cleaned up)
                 created_worktrees.retain(|wt| wt.task_id != task_id);
@@ -506,7 +524,14 @@ async fn execute_task_in_worktree<E: StepExecutor>(
         let msg = format!("task {task_id:02}: {summary}");
         git::git(&worktree.path, &["commit", "-m", &msg])?;
 
-        emit(logger, Event::TaskCompleted { task_id, attempt: final_attempt, summary });
+        emit(
+            logger,
+            Event::TaskCompleted {
+                task_id,
+                attempt: final_attempt,
+                summary,
+            },
+        );
         // Disarm guard — caller will handle cleanup
         let worktree = cleanup_guard.disarm()?;
         Ok((worktree, TaskOutcome::Success(task_metrics), final_attempt))
@@ -537,7 +562,13 @@ async fn run_with_retries<E: StepExecutor>(
         attempts += 1;
 
         // Emit TaskStarted for this attempt
-        emit(logger, Event::TaskStarted { task_id, attempt: attempts });
+        emit(
+            logger,
+            Event::TaskStarted {
+                task_id,
+                attempt: attempts,
+            },
+        );
 
         emit(logger, Event::PromptSent { task_id });
 

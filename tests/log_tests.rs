@@ -24,7 +24,10 @@ fn logger_writes_valid_jsonl() {
     let mut logger = SessionLogger::new(dir.path(), session_id).unwrap();
 
     logger
-        .log(&Event::TaskStarted { task_id: TaskId(0), attempt: 1 })
+        .log(&Event::TaskStarted {
+            task_id: TaskId(0),
+            attempt: 1,
+        })
         .unwrap();
     logger
         .log(&Event::TaskCompleted {

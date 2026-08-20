@@ -1197,7 +1197,12 @@ async fn parallel_merge_conflict_logs_merge_fix_events() {
     );
 
     // Verify MergeFixSucceeded has cost_usd field
-    if let Event::MergeFixSucceeded { task_id, attempt, cost_usd } = &merge_fix_succeeded[0] {
+    if let Event::MergeFixSucceeded {
+        task_id,
+        attempt,
+        cost_usd,
+    } = &merge_fix_succeeded[0]
+    {
         assert!(
             *task_id == TaskId(0) || *task_id == TaskId(1),
             "merge-fix task should be 0 or 1"
